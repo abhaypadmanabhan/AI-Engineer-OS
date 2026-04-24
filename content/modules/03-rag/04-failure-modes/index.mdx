@@ -1,0 +1,92 @@
+---
+title: "RAG failure modes — pattern recognition"
+layer: 3
+order: 4
+minutes: 30
+cost_usd: 0.02
+p95_latency_ms: null
+stack: ["numpy", "voyage"]
+gate:
+  metric: "failures_identified"
+  threshold: 4
+interview_qs:
+  - q: "Your RAG confidently answers a question where the correct document is not in the corpus. What is the failure mode called, and what is the fix?"
+    answer: "Coverage gap. The retriever returns its nearest neighbors regardless of whether they are actually relevant — the LLM has no way to know. Fix with a retrieval-confidence threshold (reject if top-1 score < X), a 'no-answer' tool call, or a grounding check before generation."
+    difficulty: "senior"
+  - q: "Why does naive RAG hallucinate specific numbers (e.g. '73%') even when the correct chunk is retrieved?"
+    answer: "Two causes usually. (1) The correct chunk got ranked #4 and truncated when top-3 was stuffed. (2) The chunk contains the number but the prompt didn't force citation or quoting, so the model regenerated from parametric memory. Fix: top-k higher, require quoted citations, use structured output for numbers."
+    difficulty: "senior"
+  - q: "Your top-5 chunks are all from the same paper's intro. What's the failure and what's the fix?"
+    answer: "Redundancy / lack of diversity. Dense retrieval returns semantic near-duplicates. Fix with MMR (Maximal Marginal Relevance), diversification by doc_id, or reciprocal rank fusion across multiple retrievers."
+    difficulty: "mid"
+---
+
+Four failure modes. No fixes yet. Learn to name them when you see them — that is the whole lesson.
+
+```python file=reproduce_failures.py
+import numpy as np, voyageai
+vo = voyageai.Client()
+
+# Failure 1 — boundary split. A 500-char chunker cuts a table from its heading.
+page = (
+  "Hyperparameters\n"
+  "learning_rate: 3e-4\n"
+  "batch_size: 256\n"
+  "warmup_steps: 2000\n"
+  + "... noise " * 80
+  + "Training used AdamW with cosine decay."
+)
+chunks = [page[i:i+80] for i in range(0, len(page), 80)]
+# Query for "learning rate" retrieves the heading OR the value — never both. Signal is split.
+```
+
+### 1. Chunk boundary split
+
+Fixed-size chunking has no respect for structure. Tables, code blocks, and numbered lists get cut. The query "what is the learning rate" returns the *heading* chunk; the query "3e-4" returns the *value* chunk. Neither is enough to answer.
+
+### 2. Coverage gap (answered anyway)
+
+```python file=coverage_gap.py
+# Index has papers about BERT, GPT, T5. User asks about Mamba.
+# Top-1 chunk is about Transformers with score 0.31 — nowhere near "relevant".
+# The LLM does not see the score. It writes a plausible paragraph about Mamba that cites GPT-3.
+q = "What is the recurrence relation in Mamba's state space model?"
+# There is no Mamba paper in the index. The correct answer is "I don't know."
+# Naive RAG never says "I don't know."
+```
+
+Coverage gap is the production RAG incident. Users trust cited answers. The citations are from papers the user didn't ask about. This costs credibility fast.
+
+### 3. Redundancy (top-k, same doc)
+
+```python file=redundancy.py
+# Paper 2203.15556 (Chinchilla) has 12 chunks mentioning "compute-optimal".
+# Query: "how was the compute budget chosen" → top-5 are all chunks 3, 4, 5, 6, 7 of 2203.15556.
+# Three problems:
+#   - redundant tokens burn context
+#   - if the answer is in a different paper, it is now buried at rank 6
+#   - the LLM over-anchors on one source
+```
+
+### 4. Numeric / exact-match queries
+
+```python file=numeric_fail.py
+# Dense embeddings are fuzzy. "73.2%" and "73.4%" and "seventy-three percent"
+# all land in the same neighborhood. For exact-match queries — ticker symbols,
+# error codes, config values — dense retrieval is the wrong tool.
+query = "error code ECONNREFUSED in Table 3"
+# Correct chunk contains the literal token "ECONNREFUSED". Top-1 is about
+# "connection failures" (semantically nearest). Hybrid BM25 fixes this. Lesson 06.
+```
+
+## Tagging drill
+
+Run the lab. For each of 12 retrieval transcripts, tag one of: `boundary_split`, `coverage_gap`, `redundancy`, `numeric_exact`. Hit 4/4 categories correctly tagged → pass. You should get >9/12 on the raw count.
+
+<Callout kind="break" title="Why no fixes in this lesson">
+Jumping to a fix before you can name the failure leads to Framework Disease — crank up chunk size, add a reranker, swap the embedder, nothing changes because the real issue was coverage gap. Name first, then fix. Lessons 05-07 each target exactly one of these four.
+</Callout>
+
+<MasteryGate metric="failures_identified" threshold={4} slug="03-rag/04-failure-modes">
+Run `solution.py`. It prints 12 retrieval transcripts and the correct failure mode for each. `eval.py` exits 0 if all 4 category names appear at least once in the expected taxonomy set. Enter `4`.
+</MasteryGate>

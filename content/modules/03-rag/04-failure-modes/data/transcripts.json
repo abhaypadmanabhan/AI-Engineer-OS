@@ -1,0 +1,104 @@
+[
+  {
+    "query": "what is the learning rate",
+    "top_k": [
+      {"doc_id": "chinchilla", "text": "Hyperparameters\nlearning_rate:"},
+      {"doc_id": "chinchilla", "text": "We tuned on a held-out split of 1% of tokens."},
+      {"doc_id": "gpt3",       "text": "Training used AdamW with weight decay 0.1."}
+    ],
+    "failure_mode": "boundary_split"
+  },
+  {
+    "query": "3e-4",
+    "top_k": [
+      {"doc_id": "chinchilla", "text": "3e-4\nbatch_size: 256\nwarmup_steps: 2000"},
+      {"doc_id": "bert",       "text": "peak learning rate of 1e-4 linearly warmed up."}
+    ],
+    "failure_mode": "boundary_split"
+  },
+  {
+    "query": "What is the recurrence in Mamba's state space model?",
+    "top_k": [
+      {"doc_id": "attention", "text": "Self-attention computes a weighted sum of values..."},
+      {"doc_id": "gpt3",      "text": "The Transformer architecture uses multi-head attention..."},
+      {"doc_id": "bert",      "text": "Bidirectional context via masked language modeling..."}
+    ],
+    "failure_mode": "coverage_gap"
+  },
+  {
+    "query": "How does DPO avoid the reward model?",
+    "top_k": [
+      {"doc_id": "rlhf",  "text": "The reward model is trained on pairwise preferences..."},
+      {"doc_id": "instruct", "text": "RLHF fine-tunes using PPO against a learned reward."}
+    ],
+    "failure_mode": "coverage_gap"
+  },
+  {
+    "query": "what does GRPO do",
+    "top_k": [
+      {"doc_id": "rlhf", "text": "Proximal policy optimization clips the objective..."}
+    ],
+    "failure_mode": "coverage_gap"
+  },
+  {
+    "query": "how was the compute budget chosen",
+    "top_k": [
+      {"doc_id": "chinchilla", "text": "compute-optimal scaling requires equal growth of params and tokens"},
+      {"doc_id": "chinchilla", "text": "We trained a 70B model on 1.4T tokens..."},
+      {"doc_id": "chinchilla", "text": "Gopher was under-trained by a factor of 4..."},
+      {"doc_id": "chinchilla", "text": "Compute-optimal models dominate the Pareto frontier..."},
+      {"doc_id": "chinchilla", "text": "FLOPs = 6 * N * D, per Kaplan et al..."}
+    ],
+    "failure_mode": "redundancy"
+  },
+  {
+    "query": "vision transformer patch embedding",
+    "top_k": [
+      {"doc_id": "vit", "text": "Each image is split into 16x16 patches..."},
+      {"doc_id": "vit", "text": "Patches are linearly projected into a D-dim space..."},
+      {"doc_id": "vit", "text": "Positional embeddings are added to each patch token..."},
+      {"doc_id": "vit", "text": "The [CLS] token aggregates global information..."}
+    ],
+    "failure_mode": "redundancy"
+  },
+  {
+    "query": "error code ECONNREFUSED in Table 3",
+    "top_k": [
+      {"doc_id": "sre_book", "text": "Connection failures commonly arise from misconfigured DNS..."},
+      {"doc_id": "sre_book", "text": "Retries with exponential backoff mitigate transient errors..."}
+    ],
+    "failure_mode": "numeric_exact"
+  },
+  {
+    "query": "accuracy of 73.2% on MMLU",
+    "top_k": [
+      {"doc_id": "gpt3",    "text": "GPT-3 attains strong zero-shot performance on many benchmarks..."},
+      {"doc_id": "chinchilla", "text": "Chinchilla outperforms Gopher on all tested benchmarks..."}
+    ],
+    "failure_mode": "numeric_exact"
+  },
+  {
+    "query": "section 4.2 equation 7",
+    "top_k": [
+      {"doc_id": "attention", "text": "We use scaled dot-product attention as the base primitive..."}
+    ],
+    "failure_mode": "numeric_exact"
+  },
+  {
+    "query": "citation [42] in the discussion",
+    "top_k": [
+      {"doc_id": "bert", "text": "Related work on contextual embeddings extends ELMo..."}
+    ],
+    "failure_mode": "numeric_exact"
+  },
+  {
+    "query": "what optimizer did ResNet use",
+    "top_k": [
+      {"doc_id": "resnet", "text": "We trained with SGD, momentum 0.9, weight decay 1e-4."},
+      {"doc_id": "resnet", "text": "Batch size 256, learning rate 0.1 with step decay..."},
+      {"doc_id": "resnet", "text": "All experiments used NVIDIA K40 GPUs..."},
+      {"doc_id": "resnet", "text": "The deeper networks benefit most from residual connections..."}
+    ],
+    "failure_mode": "redundancy"
+  }
+]
