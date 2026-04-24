@@ -1,0 +1,117 @@
+---
+title: "LlamaIndex reveal: 50 lines → 15, and what the abstraction hides"
+layer: 3
+order: 9
+minutes: 30
+cost_usd: 0.05
+p95_latency_ms: 2800
+stack: ["llama-index-core", "llama-index-llms-anthropic", "llama-index-embeddings-voyageai", "llama-index-retrievers-bm25"]
+gate:
+  metric: "ndcg_at_10"
+  threshold: 0.65
+interview_qs:
+  - q: "You benchmarked your hand-rolled RAG at nDCG 0.86 and a colleague rewrote it in LlamaIndex at 0.72. They say 'frameworks trade a little quality for a lot of velocity.' What do you say?"
+    answer: "I would ask which defaults regressed. The common ones: SentenceSplitter crossing section headings on structured docs, QueryFusionRetriever's default mode='simple' averaging raw BM25 and cosine scores instead of RRF, and response_mode='compact' silently truncating the middle of the context stuff. Each is a one-line override, not a framework limitation. The 0.72 is a config bug, not a quality tradeoff — a framework with overrides is the same work as the primitives, just in different idiom. The honest velocity answer is 'LlamaIndex for the first pass to see if retrieval is possible at all; primitives or LlamaIndex-with-every-default-overridden for production.' Never ship a framework default you have not measured."
+    difficulty: "senior"
+  - q: "Which LlamaIndex abstraction fails silently and why is it the worst of the three defaults?"
+    answer: "`response_mode='compact'` in the query engine stuffs every retrieved node into a single prompt and silently truncates the middle of the context window when the concatenated length exceeds the model limit. Retrieval looks fine in traces, the generator produces fluent output, and faithfulness tanks without any error or warning. The failure mode is indistinguishable from 'the model is making things up' — so you debug the generator while the bug is in the synthesizer. Fix is `response_mode='tree_summarize'` or `'refine'`; both scale across many nodes without silent truncation. Always instrument the actual prompt length post-synthesis on a few eval examples before trusting it."
+    difficulty: "senior"
+  - q: "When is LlamaIndex the right tool instead of the primitives?"
+    answer: "Prototyping and exploration — cheapest way to answer 'is this corpus retrievable at all' in fifteen lines. Also document-loader variety: the SimpleDirectoryReader + LlamaHub ecosystem covers PDF, DOCX, Notion, Confluence, Slack with one import per source. Writing those loaders by hand is real work. What you do NOT get for free is production-grade retrieval quality — the defaults are a starting point, not a destination. The intellectually honest production use is 'LlamaIndex as plumbing for ingest + index storage, primitives for retrieval + generation when quality matters.'"
+    difficulty: "mid"
+---
+
+You have now hand-rolled every primitive: chunking, embedding, BM25, RRF, rerank, query transforms, Ragas. Time to rebuild 3.3's 50-line naive RAG in 15 lines of LlamaIndex — and then watch three defaults bite you.
+
+## 50 lines → 15
+
+```python file=naive_3_3.py  // 3.3 — for reference
+# load arxiv/*.txt
+texts, arxiv_ids = [], []
+for p in sorted(ARXIV_DIR.glob("*.txt")):
+    t = p.read_text()
+    for i in range(0, len(t), 500):
+        texts.append(t[i:i+500]); arxiv_ids.append(p.stem)
+
+# embed + normalize
+E = np.array(vo.embed(texts, model="voyage-3", input_type="document").embeddings)
+E /= np.linalg.norm(E, axis=1, keepdims=True)
+
+# retrieve
+def retrieve(q, k):
+    qe = np.array(vo.embed([q], model="voyage-3", input_type="query").embeddings[0])
+    qe /= np.linalg.norm(qe)
+    return [arxiv_ids[i] for i in np.argsort(-(E @ qe))[:k]]
+
+# generate
+r = client.messages.create(model="claude-sonnet-4-6", ..., messages=[...])
+```
+
+```python file=llamaindex_3_9.py  // 3.9 — same behaviour, fewer lines
+from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
+from llama_index.llms.anthropic import Anthropic
+from llama_index.embeddings.voyageai import VoyageEmbedding
+
+Settings.llm = Anthropic(model="claude-sonnet-4-6")
+Settings.embed_model = VoyageEmbedding(model_name="voyage-3")
+
+docs = SimpleDirectoryReader(str(ARXIV_DIR)).load_data()
+index = VectorStoreIndex.from_documents(docs)
+engine = index.as_query_engine(similarity_top_k=5)
+
+print(engine.query("What is chain-of-thought prompting?"))
+```
+
+Same corpus, same model, same embedding. Fewer characters, more magic. Which is why we spend the rest of the lesson on the magic.
+
+<CostMeter cost="$0.02" latency="1.4s" tokens="2k" />
+
+## Three defaults that will bite you
+
+### 1. `SimpleDirectoryReader` → `SentenceSplitter` hides your chunker
+
+`VectorStoreIndex.from_documents` chunks internally with `SentenceSplitter(chunk_size=1024, chunk_overlap=20)`. On arXiv abstracts this gives ~1 chunk per paper — benign. On a 10-K filing, the sentence splitter crosses `ITEM 1A. RISK FACTORS` headings and produces chunks that mix sections. Your 3.5 structural chunker never does this. To match 3.5 behavior you write a custom `NodeParser` that respects headings — which is the code you were hoping to skip.
+
+```python file=override_parser.py
+from llama_index.core.node_parser import MarkdownNodeParser
+index = VectorStoreIndex.from_documents(docs, transformations=[MarkdownNodeParser()])
+```
+
+### 2. `QueryFusionRetriever(mode="simple")` averages raw scores
+
+```python file=fusion_bug.py
+from llama_index.retrievers.bm25 import BM25Retriever
+from llama_index.core.retrievers import QueryFusionRetriever
+
+bad  = QueryFusionRetriever([dense, bm25], mode="simple",             similarity_top_k=10)
+good = QueryFusionRetriever([dense, bm25], mode="reciprocal_rerank",  similarity_top_k=10)
+```
+
+`mode="simple"` averages raw scores. BM25 returns unbounded tf-idf magnitudes, cosine returns [0, 1]. The exact scale bug 3.6's RRF section warned against. `mode="reciprocal_rerank"` is RRF — what you actually want. The default is the wrong one.
+
+### 3. `response_mode="compact"` silently truncates the context window
+
+This is the nastiest. The default query engine concatenates all retrieved nodes into a single prompt. When the concatenated context exceeds the model's input limit, LlamaIndex silently truncates the middle of the buffer. No error, no warning. Faithfulness collapses; generation is fluent; retrieval looks fine. You spend hours debugging the generator while the bug is in the synthesizer.
+
+```python file=response_mode_fix.py
+engine = index.as_query_engine(
+    similarity_top_k=5,
+    response_mode="tree_summarize",   # recursive — no silent truncation
+)
+```
+
+`tree_summarize` synthesizes pairwise up a tree; `refine` synthesizes sequentially. Both scale across many nodes without dropping any. Always instrument the actual post-synthesis prompt length on a few eval examples before trusting the default.
+
+<Callout kind="break" title="Watch it break">
+Run `engine.query(very_long_query)` on a corpus where the top-5 nodes sum to >30k tokens. Print `engine.last_response.source_nodes` and compare to what actually made it into the LLM call via a Langfuse trace. With `response_mode="compact"` you will see nodes 2-4 truncated in the middle; with `tree_summarize` all five are summarized and folded. This is why observability (lesson 5.5) is not optional — frameworks lie by omission.
+</Callout>
+
+## The hiring answer
+
+"I used LlamaIndex for the first pass to check retrievability in fifteen lines. I measured against my eval set, found the default parser crossed section headings and response_mode='compact' was truncating context. I replaced the parser with a structural one and set response_mode='tree_summarize'. The retriever stayed LlamaIndex. That is the honest posture: framework as scaffolding, primitives where quality is measured."
+
+Never ship a framework default you have not measured.
+
+<MasteryGate metric="ndcg_at_10" threshold={0.65} slug="03-rag/09-llamaindex">
+Run `eval.py`. It scores both the 50-line naive version and the 15-line LlamaIndex version on the 20-Q arXiv eval. Target: LlamaIndex version ≥ 0.65 (naive parity). Enter the LlamaIndex score.
+</MasteryGate>
