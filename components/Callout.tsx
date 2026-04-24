@@ -1,12 +1,13 @@
 import { AlertTriangle, Info, Skull, Zap } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
-type Kind = "info" | "warn" | "break" | "tip";
-const styles: Record<Kind, { cls: string; Icon: any; label: string }> = {
-  info:  { cls: "border-sky-500/40 bg-sky-500/5",    Icon: Info,          label: "Note" },
-  warn:  { cls: "border-amber-500/40 bg-amber-500/5", Icon: AlertTriangle, label: "Warning" },
-  break: { cls: "border-rose-500/40 bg-rose-500/5",   Icon: Skull,         label: "Watch it break" },
-  tip:   { cls: "border-emerald-500/40 bg-emerald-500/5", Icon: Zap,       label: "Tip" },
+type Kind = "info" | "warn" | "warning" | "break" | "tip";
+const variantMap: Record<Kind, { variant: "info" | "warning" | "break" | "default"; Icon: typeof Info; label: string }> = {
+  info:    { variant: "info",    Icon: Info,          label: "Note" },
+  warn:    { variant: "warning", Icon: AlertTriangle, label: "Warning" },
+  warning: { variant: "warning", Icon: AlertTriangle, label: "Warning" },
+  break:   { variant: "break",   Icon: Skull,         label: "Watch it break" },
+  tip:     { variant: "default", Icon: Zap,           label: "Tip" },
 };
 
 export function Callout({
@@ -18,14 +19,13 @@ export function Callout({
   title?: string;
   children: React.ReactNode;
 }) {
-  const { cls, Icon, label } = styles[kind];
+  const entry = variantMap[kind] ?? variantMap.info;
+  const { variant, Icon, label } = entry;
   return (
-    <div className={cn("my-5 rounded-lg border p-4", cls)}>
-      <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide">
-        <Icon className="h-4 w-4" />
-        {title ?? label}
-      </div>
-      <div className="text-sm">{children}</div>
-    </div>
+    <Alert variant={variant} className="my-5">
+      <Icon className="h-4 w-4" />
+      <AlertTitle className="text-xs font-semibold uppercase tracking-wide">{title ?? label}</AlertTitle>
+      <AlertDescription className="mt-1 text-sm">{children}</AlertDescription>
+    </Alert>
   );
 }

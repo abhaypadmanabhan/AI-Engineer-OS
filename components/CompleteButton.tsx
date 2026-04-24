@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
 export function CompleteButton({ slug }: { slug: string[] }) {
   const key = `done:${slug.join("/")}`;
@@ -20,17 +20,13 @@ export function CompleteButton({ slug }: { slug: string[] }) {
   }
 
   return (
-    <button
+    <Button
       onClick={toggle}
-      className={cn(
-        "inline-flex items-center gap-2 rounded border px-3 py-1.5 text-sm font-medium transition-colors",
-        done
-          ? "border-accent bg-accent/10 text-accent"
-          : "border-border hover:border-accent"
-      )}
+      variant={done ? "default" : "outline"}
+      size="sm"
     >
       <Check className="h-4 w-4" />
       {done ? "Completed" : "Mark complete"}
-    </button>
+    </Button>
   );
 }

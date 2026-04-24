@@ -8,9 +8,21 @@
   --muted: 39 39 42;
   --muted-foreground: 161 161 170;
   --border: 39 39 42;
+  --input: 39 39 42;
+  --ring: 251 146 60;
   --card: 30 30 33;
+  --card-foreground: 244 244 245;
+  --popover: 30 30 33;
+  --popover-foreground: 244 244 245;
+  --primary: 244 244 245;
+  --primary-foreground: 24 24 27;
+  --secondary: 39 39 42;
+  --secondary-foreground: 244 244 245;
   --accent: 251 146 60;
   --accent-foreground: 24 24 27;
+  --destructive: 239 68 68;
+  --destructive-foreground: 244 244 245;
+  --radius: 0.5rem;
 }
 
 html,

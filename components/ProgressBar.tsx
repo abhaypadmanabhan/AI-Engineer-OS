@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { Progress } from "@/components/ui/progress";
 
 type Lesson = { slug: string[]; layer: number };
 
@@ -30,12 +31,7 @@ export function ProgressBar({
       )}
       <div className="ml-auto flex items-center gap-2">
         <span className="text-muted-foreground">{pct}% to job-ready</span>
-        <div className="h-1.5 w-32 overflow-hidden rounded-full bg-muted">
-          <div
-            className="h-full bg-accent transition-all"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
+        <Progress value={pct} className="h-1.5 w-32" />
       </div>
     </div>
   );

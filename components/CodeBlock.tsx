@@ -1,12 +1,13 @@
 "use client";
 import { useState } from "react";
 import { Check, Copy, ExternalLink } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { colabUrl } from "@/lib/colab";
 
 type Props = {
-  html: string;        // pre-highlighted HTML from shiki
-  raw: string;         // source text for copy
+  html: string;
+  raw: string;
   lang: string;
   colabPath?: string;
   filename?: string;
@@ -32,34 +33,37 @@ export function CodeBlock({ html, raw, lang, colabPath, filename }: Props) {
         </div>
         <div className="flex items-center gap-1">
           {colabPath && (
-            <a
-              href={colabUrl(colabPath)}
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center gap-1 rounded px-2 py-1 hover:bg-muted"
-              title="Open in Google Colab"
-            >
-              <ExternalLink className="h-3 w-3" />
-              <span>Colab</span>
-            </a>
+            <Button asChild variant="ghost" size="sm" className="h-7 px-2 text-xs">
+              <a
+                href={colabUrl(colabPath)}
+                target="_blank"
+                rel="noreferrer"
+                title="Open in Google Colab"
+              >
+                <ExternalLink className="h-3 w-3" />
+                <span>Colab</span>
+              </a>
+            </Button>
           )}
-          <button
+          <Button
             onClick={copy}
-            className={cn(
-              "flex items-center gap-1 rounded px-2 py-1 hover:bg-muted",
-              copied && "text-accent"
-            )}
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs"
             aria-label="Copy code"
           >
-            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+            {copied ? <Check className="h-3 w-3 text-accent" /> : <Copy className="h-3 w-3" />}
             <span>{copied ? "copied" : "copy"}</span>
-          </button>
+          </Button>
         </div>
       </div>
-      <div
-        className="overflow-x-auto px-4 py-3 text-sm"
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
+      <ScrollArea className="max-w-full">
+        <div
+          className="px-4 py-3 text-sm"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+        <ScrollBar orientation="horizontal" />
+      </ScrollArea>
     </div>
   );
 }
