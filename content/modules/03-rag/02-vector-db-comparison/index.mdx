@@ -1,0 +1,140 @@
+---
+title: "Vector DB comparison: Qdrant, pgvector, Chroma"
+layer: 3
+order: 2
+minutes: 40
+cost_usd: 0.00
+p95_latency_ms: 50
+stack: ["qdrant", "pgvector", "chroma"]
+gate:
+  metric: "qdrant_query_latency_p95_ms"
+  threshold: 50
+interview_qs:
+  - q: "Qdrant, pgvector, Pinecone — how do you choose?"
+    answer: "Already have Postgres and <10M vectors? pgvector. Need filters + hybrid + self-host + scale? Qdrant. Want zero ops and corporate card? Pinecone. Chroma is great for prototypes and loses at scale. Weaviate if you need GraphQL-native. The stack is never the bottleneck at <1M vectors."
+    difficulty: "mid"
+  - q: "What does HNSW actually do?"
+    answer: "Hierarchical Navigable Small World graph. Each node has links to k neighbors at multiple layers; search greedy-walks from top down. O(log N) query, but recall depends on `ef_search` — crank it up at query time to trade latency for recall. Most DBs expose this knob."
+    difficulty: "senior"
+  - q: "Why not SELECT * WHERE cosine(q, emb) > 0.8 in Postgres without pgvector?"
+    answer: "Sequential scan on every query. pgvector adds ivfflat/hnsw indexes that prune the search space. At 100k rows the difference is 1ms vs 800ms. Indexes are the entire point."
+    difficulty: "mid"
+---
+
+Qdrant on docker, pgvector on Postgres, Chroma in-process. Insert 1k vectors. Query. Decide.
+
+```bash file=docker-compose.yml
+# Run: docker compose up -d
+version: "3.9"
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    ports: ["6333:6333", "6334:6334"]
+    volumes: ["./qdrant_storage:/qdrant/storage"]
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment: { POSTGRES_PASSWORD: dev }
+    ports: ["5432:5432"]
+```
+
+## Qdrant — the default
+
+```python file=qdrant_demo.py
+import numpy as np
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, PointStruct
+
+client = QdrantClient(url="http://localhost:6333")
+client.recreate_collection(
+    collection_name="arxiv",
+    vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
+)
+
+# Insert 1,000 random vectors with a payload filter we'll use later
+rng = np.random.default_rng(0)
+vecs = rng.standard_normal((1000, 1024)).astype("float32")
+vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+client.upsert("arxiv", points=[
+    PointStruct(id=i, vector=vecs[i].tolist(), payload={"category": ["cs.CL","cs.CV","cs.LG"][i % 3]})
+    for i in range(1000)
+])
+
+# Query with a payload filter — this is where Qdrant shines over pgvector for complex filters
+from qdrant_client.models import Filter, FieldCondition, MatchValue
+hits = client.search(
+    collection_name="arxiv",
+    query_vector=vecs[0].tolist(),
+    query_filter=Filter(must=[FieldCondition(key="category", match=MatchValue(value="cs.CL"))]),
+    limit=5,
+)
+print([(h.id, round(h.score, 3)) for h in hits])
+```
+
+<CostMeter cost="$0.00" latency="3ms" tokens="0" />
+
+Search p95 for 1k vectors at `ef=64`: ~3ms on a laptop. HNSW default. If you flip `distance` to `DOT` and pre-normalize (which we do), search gets ~30% faster and results are identical.
+
+## pgvector — Postgres you already run
+
+```python file=pgvector_demo.py
+import numpy as np, psycopg
+from pgvector.psycopg import register_vector
+
+conn = psycopg.connect("postgresql://postgres:dev@localhost:5432/postgres", autocommit=True)
+conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+register_vector(conn)
+conn.execute("DROP TABLE IF EXISTS arxiv")
+conn.execute("CREATE TABLE arxiv (id int PRIMARY KEY, category text, emb vector(1024))")
+conn.execute("CREATE INDEX ON arxiv USING hnsw (emb vector_cosine_ops)")
+
+rng = np.random.default_rng(0)
+vecs = rng.standard_normal((1000, 1024)).astype("float32")
+vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+with conn.cursor().copy("COPY arxiv (id, category, emb) FROM STDIN") as cp:
+    for i in range(1000):
+        cp.write_row((i, ["cs.CL","cs.CV","cs.LG"][i % 3], vecs[i]))
+
+rows = conn.execute(
+    "SELECT id, 1 - (emb <=> %s) AS score FROM arxiv WHERE category='cs.CL' ORDER BY emb <=> %s LIMIT 5",
+    (vecs[0], vecs[0]),
+).fetchall()
+print(rows)
+```
+
+Same result, fewer ops. If Postgres is already running your app, this is the fastest path to production. Cosine distance operator `<=>` ships with pgvector; the index uses HNSW just like Qdrant.
+
+## Chroma — prototype speed
+
+```python file=chroma_demo.py
+import chromadb, numpy as np
+client = chromadb.Client()
+col = client.create_collection("arxiv", metadata={"hnsw:space": "cosine"})
+rng = np.random.default_rng(0); v = rng.standard_normal((1000, 1024)).astype("float32")
+v /= np.linalg.norm(v, axis=1, keepdims=True)
+col.add(ids=[str(i) for i in range(1000)], embeddings=v.tolist(),
+        metadatas=[{"category": ["cs.CL","cs.CV","cs.LG"][i % 3]} for i in range(1000)])
+print(col.query(query_embeddings=[v[0].tolist()], n_results=5, where={"category": "cs.CL"}))
+```
+
+In-process, zero services. Perfect for the first naive-RAG lesson. Loses at scale — no built-in sharding, slower than Qdrant past ~500k vectors.
+
+<Callout kind="break" title="Watch it break">
+Insert 1M vectors into Chroma's default SQLite backend. Watch memory balloon past 8GB and queries crawl to ~200ms. Chroma isn't wrong — it is tuned for the 10k-vector notebook case. At production scale, you graduate to Qdrant or pgvector. Picking the wrong store for the corpus size is the most common vector-infra mistake.
+</Callout>
+
+## Decision matrix
+
+| | Qdrant | pgvector | Chroma | Pinecone |
+|---|---|---|---|---|
+| Ops burden | docker | none if you have PG | none | none (SaaS) |
+| Scale ceiling | 100M+ | 10M comfortable | 500k | unlimited |
+| Filter expressivity | rich | SQL (best) | basic | ok |
+| Hybrid search | native | via extensions | manual | native |
+| Cost at 10M vectors | self-host | self-host | — | ~$70/mo |
+| Best for | prod RAG | PG-native apps | prototypes | zero-ops teams |
+
+Default for this course: **Qdrant**. The capstone M2 runs on it. pgvector is shown side-by-side so you can port in 10 lines when your team insists on staying in Postgres.
+
+<MasteryGate metric="qdrant_query_latency_p95_ms" threshold={50} slug="03-rag/02-vector-db-comparison">
+Run `solution.py`. Inserts 1000 vectors into Qdrant, runs 100 queries, reports p95 latency. Target: ≤ 50 ms on localhost. Enter your number.
+</MasteryGate>
