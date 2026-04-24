@@ -1,0 +1,112 @@
+---
+title: "The 2026 AI engineer's toolchain"
+layer: 0
+order: 1
+minutes: 25
+cost_usd: 0
+p95_latency_ms: null
+stack: ["uv", "ruff", "direnv", "pyproject"]
+interview_qs:
+  - q: "Why uv over pip + venv in 2026?"
+    answer: "uv is 10-100x faster, resolves deps deterministically, and manages Python versions itself. One binary replaces pip, pip-tools, pipx, virtualenv, and pyenv. Lockfile is built-in."
+    difficulty: "junior"
+  - q: "What belongs in .gitignore for an AI project that doesn't for a normal Python project?"
+    answer: ".env (API keys), model weights (.gguf, .safetensors, *.bin), vector store dirs (qdrant_storage/, chroma_db/), Hugging Face cache (~/.cache/huggingface if symlinked), and Langfuse logs."
+    difficulty: "mid"
+  - q: "pyproject.toml or requirements.txt for a new AI project — and why?"
+    answer: "pyproject.toml. It's PEP 621 standard, supports optional deps (dev/test/gpu extras), ships with build-system metadata, and every modern tool (uv, poetry, hatch, ruff) reads it. requirements.txt is output, not source."
+    difficulty: "mid"
+---
+
+Install the entire stack in under two minutes.
+
+```bash file=install.sh
+# macOS / Linux — one-liner installs uv, which brings its own Python
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# create a project, pin Python 3.12, install the core SDKs
+uv init ai-engineer-warmup && cd ai-engineer-warmup
+uv python pin 3.12
+uv add anthropic openai httpx pydantic python-dotenv
+uv add --dev ruff
+```
+
+That is the entire toolchain. No `pip install`, no `python -m venv`, no `pyenv`. `uv` replaces them all and runs 10–100× faster because it's Rust.
+
+## Why this stack
+
+`uv` is the package manager. It resolves dependencies deterministically, writes a lockfile, and installs Python itself — so every teammate gets the exact same environment without fighting `pyenv`.
+
+`ruff` is the linter **and** formatter. Runs in milliseconds on massive repos. Drop-in replaces `black`, `isort`, `flake8`, `pylint`.
+
+`pyproject.toml` is the single source of truth. Every modern tool reads it.
+
+`direnv` auto-loads `.env` when you `cd` into the project — so `os.environ["ANTHROPIC_API_KEY"]` just works without you ever `source`-ing anything.
+
+## Minimum viable `pyproject.toml`
+
+```toml file=pyproject.toml
+[project]
+name = "ai-engineer-warmup"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "anthropic>=0.40",
+  "openai>=1.60",
+  "httpx>=0.27",
+  "pydantic>=2.9",
+  "python-dotenv>=1.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+```
+
+## direnv in 30 seconds
+
+```bash
+brew install direnv               # or: apt install direnv
+echo 'eval "$(direnv hook zsh)"' >> ~/.zshrc   # bash: replace zsh
+
+# inside the project
+echo 'dotenv' > .envrc
+direnv allow
+```
+
+<Callout kind="break" title="Watch it break">
+Forget to add `.env` to `.gitignore`, commit your ANTHROPIC_API_KEY, push to GitHub → Anthropic auto-rotates it within minutes. Don't skip the next step.
+</Callout>
+
+## Canonical `.gitignore`
+
+```gitignore file=.gitignore
+# secrets
+.env
+.envrc
+*.pem
+
+# python
+__pycache__/
+.venv/
+*.egg-info/
+
+# AI artifacts
+*.gguf
+*.safetensors
+*.bin
+models/
+qdrant_storage/
+chroma_db/
+langfuse_data/
+
+# notebooks
+.ipynb_checkpoints/
+```
+
+<MasteryGate metric="setup_verified" threshold={1} slug="00-setup/01-toolchain">
+Paste `1` once you have: (a) `uv --version` prints a version, (b) `.env` is in `.gitignore`, and (c) `direnv allow` loaded your `ANTHROPIC_API_KEY`. Enter 1 to mark this lesson's prerequisites done.
+</MasteryGate>

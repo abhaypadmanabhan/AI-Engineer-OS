@@ -1,0 +1,109 @@
+---
+title: "Structured outputs — the production pattern"
+layer: 2
+order: 4
+minutes: 35
+cost_usd: 0.02
+p95_latency_ms: 1400
+stack: ["anthropic", "pydantic"]
+gate:
+  metric: "schema_adherence"
+  threshold: 0.95
+interview_qs:
+  - q: "Why do production LLM systems almost never use free-form string outputs?"
+    answer: "Strings break downstream code. Structured outputs (tool calls, JSON schema) give you a validated contract. Regressions fail loudly at parse-time instead of silently poisoning the DB."
+    difficulty: "mid"
+  - q: "How does Anthropic's tool-use differ from OpenAI's JSON mode?"
+    answer: "Anthropic's tool use emits a typed `input` object matching the tool's JSON schema and the model commits to calling it. OpenAI's JSON mode only guarantees valid JSON — not adherence to a schema unless you also pass `response_format={type: json_schema}`."
+    difficulty: "senior"
+  - q: "Pydantic validation fails on the LLM output. What now?"
+    answer: "(1) Log the raw output + schema to a repro file. (2) Feed the ValidationError message back to the model and ask it to correct — one retry max. (3) If it fails again, route to a bigger model or a human. Don't loop forever."
+    difficulty: "senior"
+---
+
+Never parse a free-form LLM string in production. Force the model into a schema.
+
+```python file=classify.py
+from anthropic import Anthropic
+from pydantic import BaseModel, Field
+from typing import Literal
+
+class Classification(BaseModel):
+    category: Literal["billing", "bug", "feature", "spam"]
+    confidence: float = Field(ge=0, le=1)
+    reasoning: str
+
+TOOL = {
+    "name": "classify_ticket",
+    "description": "Classify a customer support ticket.",
+    "input_schema": Classification.model_json_schema(),
+}
+
+client = Anthropic()
+
+def classify(text: str) -> Classification:
+    r = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=400,
+        temperature=0,
+        tools=[TOOL],
+        tool_choice={"type": "tool", "name": "classify_ticket"},
+        messages=[{"role": "user", "content": text}],
+    )
+    # Tool use forces the model to emit input matching the schema
+    call = next(b for b in r.content if b.type == "tool_use")
+    return Classification.model_validate(call.input)
+
+print(classify("My card was charged twice this month!"))
+# category='billing' confidence=0.98 reasoning='Duplicate charge reported, billing issue.'
+```
+
+<CostMeter cost="$0.02" latency="1.4s" tokens="1.5k" />
+
+## Why this pattern wins
+
+**Schema adherence.** The model is constrained by the tool's `input_schema`, not asked to "please return JSON." Adherence rates jump from ~92% to >99%.
+
+**Zero regex.** You never write `re.search(r'category:\s*(\w+)', ...)` again. Pydantic parses and validates atomically.
+
+**Typed downstream code.** The return type is `Classification`, not `dict[str, Any]`. Your IDE completes fields. Your tests mock concrete objects.
+
+## The failure mode you must see
+
+```python file=break.py
+# Same prompt, no tool. Watch the failure variety.
+r = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=400,
+    messages=[{"role": "user",
+               "content": "Classify: 'App crashes on login.' Return JSON."}],
+)
+print(r.content[0].text)
+# Sometimes: {"category": "bug", ...}
+# Sometimes: Sure! Here's the classification:\n```json\n{"category": "bug", ...}\n```
+# Sometimes: {"Category": "Bug"} — wrong casing, crashes Pydantic
+```
+
+<Callout kind="break" title="Watch it break">
+Free-form JSON output parses correctly ~9 out of 10 times on easy prompts and ~6 out of 10 on adversarial ones. That 40% failure rate is invisible in dev, catastrophic in prod. Tool use takes it to &gt;99%.
+</Callout>
+
+## Chaining structured outputs
+
+Once outputs are typed, you can compose them without string manipulation.
+
+```python file=chain.py
+class Triage(BaseModel):
+    classification: Classification
+    suggested_reply: str
+    escalate: bool
+
+# pass the previous Classification object into the next tool call
+# as validated JSON — the model never sees string soup
+```
+
+This is the production pattern every serious AI engineer uses. Every downstream layer — agents (L4), production services (L5), evals (every layer) — assumes every LLM call is schema-bound.
+
+<MasteryGate metric="schema_adherence" threshold={0.95} slug="02-llm-primitives/04-structured-outputs">
+Classify 100 tickets with the tool-use version. Enter adherence rate (fraction that parse cleanly into `Classification`). Target: ≥ 0.95.
+</MasteryGate>

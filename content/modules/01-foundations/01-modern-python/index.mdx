@@ -1,0 +1,123 @@
+---
+title: "Modern Python you forgot"
+layer: 1
+order: 1
+minutes: 45
+cost_usd: 0
+stack: ["python", "pydantic", "asyncio"]
+interview_qs:
+  - q: "When does asyncio help, and when is it pointless overhead?"
+    answer: "Helps when you're I/O-bound — many concurrent HTTP calls to LLM APIs, DB reads, file reads. Pointless (and slower) for CPU-bound work. Use multiprocessing or Rust for CPU."
+    difficulty: "mid"
+  - q: "Dataclass vs Pydantic model — how to choose?"
+    answer: "Dataclass for internal, trusted data (no runtime validation, zero overhead). Pydantic for anything crossing a boundary — API input/output, LLM tool calls, config files. The validation is the product."
+    difficulty: "mid"
+  - q: "What does `async with` actually do?"
+    answer: "Calls `__aenter__` (awaitable) on entry and `__aexit__` on exit, letting the context manager yield control during setup/teardown. Essential for async DB connections, HTTP clients, file locks."
+    difficulty: "senior"
+---
+
+Four Python features you will use every day. The rest can wait.
+
+```python file=modern.py
+from dataclasses import dataclass
+from typing import Literal
+import asyncio
+import httpx
+
+@dataclass
+class Ticket:
+    id: int
+    text: str
+    severity: Literal["low", "mid", "high"] = "mid"
+
+async def fetch(client: httpx.AsyncClient, url: str) -> dict:
+    r = await client.get(url, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+async def main():
+    async with httpx.AsyncClient() as client:
+        urls = [f"https://hacker-news.firebaseio.com/v0/item/{i}.json"
+                for i in range(40000001, 40000011)]
+        items = await asyncio.gather(*(fetch(client, u) for u in urls))
+        return [i["title"] for i in items if "title" in i]
+
+if __name__ == "__main__":
+    print(asyncio.run(main()))
+```
+
+That snippet shows all four: **type hints**, **dataclasses**, **async/await**, and **context managers**. Ten HTTP calls in parallel instead of ten in series. The synchronous version takes ~4 seconds. This one takes ~400 ms.
+
+## Type hints — the free documentation
+
+Type hints are not checked at runtime. They are checked by your editor and by `mypy` / `pyright` in CI. The payoff is that Claude Code, Copilot, and your IDE autocomplete far better when your function signatures declare intent.
+
+```python
+# unreadable
+def process(x, y=None): ...
+
+# self-documenting
+def classify_ticket(text: str, model: str = "claude-sonnet-4-6") -> Ticket: ...
+```
+
+## Dataclasses — structs, not classes
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class Config:
+    model: str = "claude-sonnet-4-6"
+    temperature: float = 0.0
+    tags: list[str] = field(default_factory=list)   # not `= []`  — mutable default trap
+```
+
+## async/await — the I/O superpower
+
+You are going to make thousands of LLM calls. Doing them serially is a waste of wall-clock time. `asyncio.gather` fans out concurrent awaitables. `httpx.AsyncClient` is `requests` for async.
+
+<Callout kind="break" title="Watch it break">
+```python
+# This looks right. It hangs forever.
+async def main():
+    urls = [...]
+    results = [await fetch(u) for u in urls]   # sequential!
+```
+`await` inside a list comprehension awaits one at a time. Use `asyncio.gather(*tasks)` for concurrency.
+</Callout>
+
+## Context managers — `with` and `async with`
+
+Context managers guarantee setup/teardown pairs around a block. File handles, DB connections, HTTP clients, tracing spans — all should live inside a `with`.
+
+```python
+# Langfuse example you'll see in Layer 5
+with langfuse.trace(name="rag-query") as trace:
+    docs = retrieve(query)
+    answer = generate(docs, query)
+    trace.score(name="faithfulness", value=0.91)
+```
+
+## Pydantic v2 — because LLMs return strings
+
+LLMs return strings. Your app needs typed data. Pydantic bridges the gap and yells when the LLM lies about the schema.
+
+```python file=pydantic_demo.py
+from pydantic import BaseModel, Field
+from typing import Literal
+
+class Classification(BaseModel):
+    category: Literal["billing", "bug", "feature", "spam"]
+    confidence: float = Field(ge=0, le=1)
+    reasoning: str
+
+# later: Classification.model_validate_json(llm_output)
+# raises ValidationError if the LLM returned garbage — which it sometimes will.
+```
+
+Everything from Layer 2 onward assumes you've internalized these four patterns. If `asyncio.gather` still feels magical, run `modern.py` and add print statements until it doesn't.
+
+<MasteryGate metric="async_speedup" threshold={5} slug="01-foundations/01-modern-python">
+Run the async HN fetcher, then rewrite it synchronously with `requests.get` in a loop. Enter the speedup ratio (async_ms / sync_ms → should be ≥ 5×).
+</MasteryGate>

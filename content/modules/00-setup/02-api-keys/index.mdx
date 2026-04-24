@@ -1,0 +1,95 @@
+---
+title: "API keys without the foot-guns"
+layer: 0
+order: 2
+minutes: 20
+cost_usd: 0
+stack: ["anthropic", "openai", "openrouter", "huggingface"]
+interview_qs:
+  - q: "A teammate pastes an API key into a Slack DM 'just for testing.' What do you do?"
+    answer: "Treat the key as compromised. Rotate it immediately in the provider dashboard, audit usage logs for unexpected calls, and move the team to a shared secret manager (Doppler, 1Password, AWS Secrets Manager)."
+    difficulty: "junior"
+  - q: "Why does Anthropic auto-rotate keys pushed to public GitHub, and how do they find them in under a minute?"
+    answer: "GitHub runs secret scanning and pushes matches to Anthropic's partner endpoint in near real-time. Anthropic revokes, emails the owner. The detection uses regex against Anthropic's known key prefix (`sk-ant-`)."
+    difficulty: "mid"
+  - q: "Production key hygiene — name three non-obvious practices."
+    answer: "(1) Scope keys per service with separate rate limits. (2) Rotate on a cron, not on incidents. (3) Proxy all LLM traffic through a gateway that logs + injects the key, so app code never sees it."
+    difficulty: "senior"
+---
+
+Grab five accounts in 10 minutes. Free tiers only.
+
+```bash file=.env.example
+# Primary — Claude Sonnet 4.6 is our default throughout the course
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Contrast — GPT-5 shown side-by-side where the comparison matters
+OPENAI_API_KEY=sk-proj-...
+
+# Cost experiments — one SDK, 200+ models
+OPENROUTER_API_KEY=sk-or-...
+
+# Open-source weights + datasets
+HUGGINGFACE_TOKEN=hf_...
+
+# Serverless GPU for Layer 5/6 deploys
+MODAL_TOKEN_ID=ak-...
+MODAL_TOKEN_SECRET=as-...
+```
+
+## Sign-up checklist
+
+1. **Anthropic** → `console.anthropic.com` → $5 free trial credit. Plenty for all labs through Layer 3.
+2. **OpenAI** → `platform.openai.com` → $5 free (new accounts). Used for GPT-5 contrast examples.
+3. **OpenRouter** → `openrouter.ai` → top up $5. Unlocks Gemini, Llama, DeepSeek, Qwen in one SDK.
+4. **Hugging Face** → `huggingface.co/settings/tokens` → create a read token for datasets and model weights.
+5. **Modal** → `modal.com` → $30/month free credit. Needed for Layer 5 deployments.
+
+## Loading keys the right way
+
+```python file=load_env.py
+# Never hardcode. Never commit. Always load from env.
+import os
+from dotenv import load_dotenv
+
+load_dotenv()  # reads .env in cwd, no-op in prod (env already set)
+
+ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]   # raises if missing — good
+OPENAI_KEY    = os.environ.get("OPENAI_API_KEY")  # None if missing — only for optional
+```
+
+<Callout kind="warn" title="Never do this">
+```python
+# DO NOT
+client = Anthropic(api_key="sk-ant-abc123...")
+```
+A single commit with a hardcoded key will leak. Anthropic auto-rotates pushed keys within minutes, but attackers can still burn through your credit in the window before detection.
+</Callout>
+
+## Per-project isolation with direnv
+
+```bash file=.envrc
+# .envrc is committed, .env is not
+dotenv
+export ANTHROPIC_LOG=info            # per-project only
+```
+
+When you `cd` out of the project, `direnv` unloads the vars. No key pollution across projects.
+
+## Verify in 5 seconds
+
+```python file=verify.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+required = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "HUGGINGFACE_TOKEN"]
+missing = [k for k in required if not os.environ.get(k)]
+assert not missing, f"missing keys: {missing}"
+print("OK — all keys loaded")
+```
+
+<MasteryGate metric="keys_loaded" threshold={3} slug="00-setup/02-api-keys">
+Enter the number of keys `verify.py` printed as loaded (target ≥ 3: Anthropic, OpenAI, Hugging Face at minimum).
+</MasteryGate>

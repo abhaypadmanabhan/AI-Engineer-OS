@@ -1,0 +1,106 @@
+---
+title: "Naive RAG in 50 lines (no framework)"
+layer: 3
+order: 3
+minutes: 50
+cost_usd: 0.08
+p95_latency_ms: 2400
+stack: ["anthropic", "voyage", "numpy"]
+gate:
+  metric: "recall_at_5"
+  threshold: 0.6
+interview_qs:
+  - q: "Why build naive RAG from scratch before using LlamaIndex?"
+    answer: "Frameworks hide the tradeoffs. Chunk size, similarity metric, top-k, prompt template — all become invisible knobs you can't tune when you don't know they exist. From-scratch forces you to own each decision."
+    difficulty: "mid"
+  - q: "Cosine similarity or dot product — and does it matter?"
+    answer: "Equivalent when embeddings are L2-normalized. Most providers (OpenAI, Voyage, Cohere) return normalized vectors, so dot product is fine and ~2× faster. Check the docs before assuming."
+    difficulty: "senior"
+  - q: "Your naive RAG returns the wrong chunk 30% of the time. What do you try first?"
+    answer: "Inspect the top-k for failing queries. Usually: chunks too small (lost context), chunks too big (signal dilution), or missing the relevant doc entirely (coverage gap, not retrieval gap). Fix the data before touching the retriever."
+    difficulty: "senior"
+---
+
+Build RAG in 50 lines against real arXiv papers. Watch it fail. Then you'll know what LlamaIndex is abstracting.
+
+```python file=naive_rag.py colab=content/modules/03-rag/03-naive-rag/lab.ipynb
+import os, numpy as np, voyageai
+from anthropic import Anthropic
+from pathlib import Path
+
+vo = voyageai.Client()
+claude = Anthropic()
+
+# 1. Chunk — naive fixed-size, 500 chars, no overlap
+def chunk(text: str, size: int = 500) -> list[str]:
+    return [text[i:i+size] for i in range(0, len(text), size)]
+
+# 2. Index — load 10 arXiv abstracts, embed all chunks
+docs = [p.read_text() for p in Path("arxiv/").glob("*.txt")]
+chunks = [(c, i) for i, d in enumerate(docs) for c in chunk(d)]
+texts = [c for c, _ in chunks]
+embs = np.array(vo.embed(texts, model="voyage-3").embeddings)
+embs /= np.linalg.norm(embs, axis=1, keepdims=True)
+
+# 3. Retrieve — cosine top-k
+def retrieve(query: str, k: int = 5) -> list[str]:
+    qe = np.array(vo.embed([query], model="voyage-3").embeddings[0])
+    qe /= np.linalg.norm(qe)
+    scores = embs @ qe
+    return [texts[i] for i in scores.argsort()[-k:][::-1]]
+
+# 4. Generate — stuff top-k into prompt
+def ask(query: str) -> str:
+    ctx = "\n\n---\n\n".join(retrieve(query))
+    r = claude.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=500, temperature=0,
+        messages=[{
+            "role": "user",
+            "content": f"Context:\n{ctx}\n\nAnswer from context only: {query}"
+        }],
+    )
+    return r.content[0].text
+
+print(ask("What is chain-of-thought prompting?"))
+```
+
+<CostMeter cost="$0.08" latency="2.4s" tokens="12k" />
+
+That is RAG. No LangChain. No LlamaIndex. No vector DB. Just embeddings, cosine, and a prompt.
+
+## Where it breaks — go find it
+
+Run 50 queries against your 10-paper index and hand-score relevance. You will find four failure modes within the first 20 minutes.
+
+```text file=failures.txt
+QUERY: "What is the learning rate schedule for Chinchilla?"
+TOP-1: "...the model was trained on 1.4 trillion tokens..."    ← wrong chunk, right paper
+TOP-2: "...adam optimizer with beta_1=0.9..."                  ← irrelevant
+REASON: fixed 500-char chunks split the LR table from its heading.
+
+QUERY: "How does RLHF differ from DPO?"
+TOP-1: "...the reward model..."                                ← DPO paper not in index
+REASON: coverage gap, not retrieval gap. User sees a plausible wrong answer.
+
+QUERY: "Why do transformers use layer norm?"
+TOP-1: "The transformer uses layer normalization instead of..."← relevant
+TOP-5: [all from the same paper's intro]                       ← redundancy, no diversity
+REASON: no MMR or diversity re-ranking.
+
+QUERY: "train_loss after 100k steps"
+TOP-1: [arbitrary numeric chunk]                               ← embeddings can't count
+REASON: dense retrieval fails on exact-match + numeric queries. Needs hybrid BM25.
+```
+
+<Callout kind="break" title="Watch it break">
+Naive RAG answers confidently when it retrieves the wrong chunk. The LLM does not say "I don't know" — it hallucinates a plausible answer citing the wrong paper. This is the #1 production failure mode. The fix is not a better prompt; it is a better retriever + a faithfulness eval (lesson 08).
+</Callout>
+
+## Why 50 lines is the right starting point
+
+You now understand, concretely, that "RAG" = embed + retrieve + stuff-into-prompt. Everything `LlamaIndex` adds on top is a refinement of one of those three steps: chunking strategies (step 1), rerankers and query transforms (step 3), citation formatting (step 4). In lesson 09 you'll port this exact pipeline to LlamaIndex and see which decisions it made for you.
+
+<MasteryGate metric="recall_at_5" threshold={0.6} slug="03-rag/03-naive-rag">
+Write 20 questions with known-answer-chunks. Compute recall@5 (fraction where the correct chunk appears in top-5). Enter your number. Target: ≥ 0.60 for naive, ≥ 0.85 after lessons 5-7.
+</MasteryGate>

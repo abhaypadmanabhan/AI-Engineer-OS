@@ -1,0 +1,112 @@
+---
+title: "First call: Sonnet 4.6 vs GPT-5 vs Gemini 2.5"
+layer: 0
+order: 3
+minutes: 30
+cost_usd: 0.03
+p95_latency_ms: 1800
+stack: ["anthropic", "openai", "openrouter"]
+gate:
+  metric: "models_measured"
+  threshold: 3
+interview_qs:
+  - q: "Why measure latency with a loop of N≥20 calls instead of a single call?"
+    answer: "Single-call latency is dominated by cold-start and TLS handshake. p50/p95 require a distribution. LLM latency is long-tailed — one sample is uninformative."
+    difficulty: "mid"
+  - q: "How do you compute cost per request from the API response?"
+    answer: "Every SDK returns `usage.input_tokens` and `usage.output_tokens`. Multiply each by the model's $/1M rate (from the provider's pricing page), sum, divide by 1M."
+    difficulty: "junior"
+  - q: "Same prompt, three models, wildly different outputs. What's your first debugging move?"
+    answer: "Pin `temperature=0` and `max_tokens` identically. Compare again. If still different, that's the models' actual disagreement. If now identical, earlier variance was sampling noise."
+    difficulty: "mid"
+---
+
+Make the same call to three frontier models. Measure cost and latency. Compare.
+
+```python file=bench.py colab=content/modules/00-setup/03-first-call/lab.ipynb
+import os, time, statistics as stats
+from dotenv import load_dotenv
+from anthropic import Anthropic
+from openai import OpenAI
+
+load_dotenv()
+PROMPT = "In one sentence, why do LLMs hallucinate?"
+
+def bench(name, call, n=20):
+    lats, outs, costs = [], [], []
+    for _ in range(n):
+        t = time.perf_counter()
+        text, cost = call()
+        lats.append((time.perf_counter() - t) * 1000)
+        outs.append(text); costs.append(cost)
+    return {
+        "model": name,
+        "p50_ms": round(stats.median(lats)),
+        "p95_ms": round(sorted(lats)[int(0.95 * n)]),
+        "avg_cost": round(sum(costs) / n, 5),
+        "sample": outs[0][:120],
+    }
+
+def anthropic_call():
+    c = Anthropic()
+    r = c.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=80, temperature=0,
+        messages=[{"role": "user", "content": PROMPT}],
+    )
+    # Sonnet 4.6: $3/1M in, $15/1M out
+    cost = r.usage.input_tokens * 3/1e6 + r.usage.output_tokens * 15/1e6
+    return r.content[0].text, cost
+
+def openai_call():
+    c = OpenAI()
+    r = c.chat.completions.create(
+        model="gpt-5",
+        max_tokens=80, temperature=0,
+        messages=[{"role": "user", "content": PROMPT}],
+    )
+    # GPT-5: $5/1M in, $15/1M out (placeholder — check current pricing)
+    cost = r.usage.prompt_tokens * 5/1e6 + r.usage.completion_tokens * 15/1e6
+    return r.choices[0].message.content, cost
+
+def openrouter_gemini_call():
+    c = OpenAI(base_url="https://openrouter.ai/api/v1",
+               api_key=os.environ["OPENROUTER_API_KEY"])
+    r = c.chat.completions.create(
+        model="google/gemini-2.5-pro",
+        max_tokens=80, temperature=0,
+        messages=[{"role": "user", "content": PROMPT}],
+    )
+    cost = r.usage.prompt_tokens * 1.25/1e6 + r.usage.completion_tokens * 5/1e6
+    return r.choices[0].message.content, cost
+
+if __name__ == "__main__":
+    for row in [
+        bench("claude-sonnet-4-6", anthropic_call),
+        bench("gpt-5",            openai_call),
+        bench("gemini-2.5-pro",   openrouter_gemini_call),
+    ]:
+        print(row)
+```
+
+<CostMeter cost="$0.03" latency="1.8s" tokens="5k" />
+
+## What the output looks like
+
+```text
+{'model': 'claude-sonnet-4-6', 'p50_ms': 920,  'p95_ms': 1480, 'avg_cost': 0.00041, 'sample': 'LLMs hallucinate because they...'}
+{'model': 'gpt-5',             'p50_ms': 1100, 'p95_ms': 1900, 'avg_cost': 0.00058, 'sample': 'Hallucinations arise from...'}
+{'model': 'gemini-2.5-pro',    'p50_ms': 1350, 'p95_ms': 2200, 'avg_cost': 0.00018, 'sample': 'Because LLMs are trained...'}
+```
+
+## What this proves
+
+You can swap providers in one line. You can measure their actual cost. You can measure their actual latency. Every downstream decision in this course — "should I use a cheaper model here?" — is grounded in numbers you pulled from your own terminal, not marketing pages.
+
+<Callout kind="tip">
+Save the output of `bench.py` as `benchmarks/day-1.json`. In Layer 5 you'll add Langfuse and compare measured production p95 to this baseline. Surprise: cached prompts cut latency 4× — but only if you know what "before" was.
+</Callout>
+
+<MasteryGate metric="models_measured" threshold={3} slug="00-setup/03-first-call">
+Enter how many of the three models you successfully benchmarked (p95 printed for each). Target: 3.
+</MasteryGate>

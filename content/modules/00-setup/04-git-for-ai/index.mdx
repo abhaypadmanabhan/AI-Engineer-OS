@@ -1,0 +1,67 @@
+---
+title: "Git for AI projects"
+layer: 0
+order: 4
+minutes: 15
+cost_usd: 0
+stack: ["git", "git-lfs", "dvc"]
+interview_qs:
+  - q: "Should model weights live in git?"
+    answer: "No. Even with git-lfs they bloat clones and slow CI. Use a model registry (HF Hub, W&B Artifacts) or object storage (S3, R2). Track pointers in git, not bytes."
+    difficulty: "junior"
+  - q: "Why is a notebook a bad unit of version control?"
+    answer: "JSON blobs with embedded outputs, random metadata, and execution counts produce noisy diffs. Strip outputs with nbstripout pre-commit, or convert labs to .py via jupytext."
+    difficulty: "mid"
+  - q: "How do you version a prompt?"
+    answer: "Plaintext file in git + a semver tag (`prompts/classify-ticket@v3.yaml`). Log the hash on every call so a trace can be tied to an exact prompt version. Promptfoo formalizes this workflow."
+    difficulty: "senior"
+---
+
+An AI project repo is 95% code and 5% accidental nightmare. Get the nightmare out of git.
+
+```bash file=setup-git.sh
+# strip notebook outputs before commits — ends the "diff is 4000 lines of base64" pain
+uv add --dev nbstripout pre-commit
+pre-commit install
+nbstripout --install --attributes .gitattributes
+```
+
+## What belongs where
+
+| Asset | Store in | Why |
+|---|---|---|
+| Source code, prompts, configs | **git** | Small, diffable, mergeable |
+| Datasets &lt;10 MB | git | Reproducibility beats repo size |
+| Datasets 10 MB – 1 GB | **git-lfs** or **DVC** | git chokes on large binary history |
+| Datasets &gt;1 GB | **S3 / R2 / HF Datasets** | LFS becomes slower than S3 at scale |
+| Model weights | **HF Hub / W&B Artifacts / S3** | Never in git, ever |
+| Vector indices | **rebuild from data** | Side-effect, not source |
+| Traces / logs | **Langfuse / S3** | Time-series, wrong shape for git |
+| `.env` | **secrets manager** | Never commit |
+
+## Canonical .gitattributes
+
+```gitattributes file=.gitattributes
+# treat notebooks as diffable but strip outputs
+*.ipynb filter=nbstripout
+
+# LFS for any surviving binary assets (prefer: don't have any)
+*.gguf          filter=lfs diff=lfs merge=lfs -text
+*.safetensors   filter=lfs diff=lfs merge=lfs -text
+*.parquet       filter=lfs diff=lfs merge=lfs -text
+```
+
+## Commit hygiene for AI PRs
+
+Every PR that touches an LLM call should answer three questions in the description:
+1. **What prompt changed?** (diff the yaml)
+2. **What did the eval say?** (Promptfoo matrix or Ragas numbers — Layer 3)
+3. **Cost delta per 1k requests?** (+$0.12 is fine; +$12 is not)
+
+<Callout kind="tip">
+Put those three bullets in a PR template at `.github/pull_request_template.md`. Reviewers start expecting them, and nobody merges a prompt change without numbers anymore.
+</Callout>
+
+<MasteryGate metric="git_hygiene" threshold={1} slug="00-setup/04-git-for-ai">
+Enter 1 once your repo has: `.gitignore` with `.env`, `.gitattributes` with notebook stripping, and a pre-commit hook installed.
+</MasteryGate>
