@@ -1,0 +1,135 @@
+---
+title: "Chunking: fixed, semantic, recursive, structural"
+layer: 3
+order: 5
+minutes: 45
+cost_usd: 0.12
+p95_latency_ms: 2400
+stack: ["voyage", "numpy", "tiktoken"]
+gate:
+  metric: "best_chunker_recall_at_5"
+  threshold: 0.75
+interview_qs:
+  - q: "Why does fixed-size chunking underperform recursive chunking on prose?"
+    answer: "Fixed ignores sentence boundaries — a single sentence can get split across two chunks, destroying semantics. Recursive respects a hierarchy of separators (paragraph → sentence → word) so cuts land at natural boundaries. Typical lift: +5-10% recall@5 on narrative text."
+    difficulty: "mid"
+  - q: "When is semantic chunking the wrong choice?"
+    answer: "When embedding cost dominates and content is already well-structured (code, tables, form-filled data). You pay to embed every sentence to find breakpoints, then embed again for retrieval. For structural content use the structure directly (AST for code, <section> tags for HTML, sheets for XLSX)."
+    difficulty: "senior"
+  - q: "You halved chunk size and recall went down. Why?"
+    answer: "Each chunk now carries less context. Queries needing multi-sentence evidence match partial chunks with high similarity but insufficient content. The LLM then hallucinates to fill gaps. Right move is usually chunk + sentence-window or parent-doc retrieval: retrieve small, pass large."
+    difficulty: "senior"
+---
+
+Four chunkers. One corpus. Same 20-Q eval set. Pick the winner.
+
+```python file=fixed.py
+def fixed(text: str, size: int = 500, overlap: int = 50) -> list[str]:
+    step = size - overlap
+    return [text[i:i+size] for i in range(0, len(text), step)]
+```
+
+Fixed is the baseline. It is also what you saw failing in lesson 3.3 — boundary splits everywhere.
+
+## Recursive — hierarchy of separators
+
+```python file=recursive.py
+SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
+
+def recursive(text: str, size: int = 500) -> list[str]:
+    if len(text) <= size:
+        return [text]
+    for sep in SEPARATORS:
+        if sep in text:
+            parts, buf = [], ""
+            for piece in text.split(sep):
+                add = piece + (sep if sep else "")
+                if len(buf) + len(add) > size and buf:
+                    parts.append(buf)
+                    buf = add
+                else:
+                    buf += add
+            if buf:
+                parts.append(buf)
+            # recurse on oversized pieces
+            out: list[str] = []
+            for p in parts:
+                out.extend(recursive(p, size) if len(p) > size else [p])
+            return out
+    return [text[i:i+size] for i in range(0, len(text), size)]
+```
+
+Splits on paragraph breaks first, then line breaks, then sentences, then words. Cuts land at natural boundaries. This is what LlamaIndex's `SentenceSplitter` and LangChain's `RecursiveCharacterTextSplitter` do under the hood.
+
+## Semantic — embed, detect breakpoints
+
+```python file=semantic.py
+import numpy as np, voyageai
+vo = voyageai.Client()
+
+def semantic(text: str, size: int = 500, threshold_pct: int = 90) -> list[str]:
+    sents = [s.strip() for s in text.split(". ") if s.strip()]
+    if len(sents) < 3:
+        return [text]
+    E = np.array(vo.embed(sents, model="voyage-3", input_type="document").embeddings)
+    E /= np.linalg.norm(E, axis=1, keepdims=True)
+    # Adjacent-sentence cosine: low similarity = topic boundary
+    sims = (E[:-1] * E[1:]).sum(axis=1)
+    cut = np.percentile(sims, 100 - threshold_pct)   # break where similarity is bottom-10%
+    chunks, buf = [], sents[0]
+    for i, s in enumerate(sents[1:]):
+        if sims[i] < cut and len(buf) > 50:
+            chunks.append(buf); buf = s
+        else:
+            buf = f"{buf}. {s}"
+    chunks.append(buf)
+    return chunks
+```
+
+<CostMeter cost="$0.02" latency="0.8s" tokens="0" />
+
+Embeds every sentence once to find topic shifts — paid per corpus, not per query. Wins on narrative text (papers, transcripts). Loses when the cost of embedding during ingest matters more than a 3-5% recall bump.
+
+## Structural — use the document's own structure
+
+```python file=structural.py
+import re
+
+def structural_md(text: str, size: int = 1200) -> list[str]:
+    """Split markdown at headings; keep heading with its section. Fallback-split oversized sections."""
+    parts = re.split(r"(?=^#{1,3} )", text, flags=re.M)
+    out: list[str] = []
+    for p in parts:
+        if len(p) <= size:
+            out.append(p.strip())
+        else:
+            out.extend(recursive(p, size))
+    return [o for o in out if o]
+```
+
+For code, swap the regex for an AST walk (`ast.parse` in Python, `tree-sitter` for polyglot). For HTML, `BeautifulSoup` + `<section>` / `<h2>`. **Structure is free signal.** Throw it away only if you must.
+
+## Benchmark all four
+
+```python file=bench.py
+from solution import build_index, recall_at_k
+
+for name, fn in [("fixed", fixed), ("recursive", recursive), ("semantic", semantic), ("structural_md", structural_md)]:
+    embs, corpus = build_index(fn)
+    r = recall_at_k(embs, corpus, k=5)
+    print(f"{name:<14} recall@5={r:.2f}  chunks={len(corpus)}")
+# fixed          recall@5=0.60  chunks=312
+# recursive      recall@5=0.70  chunks=248
+# semantic       recall@5=0.75  chunks=201
+# structural_md  recall@5=0.80  chunks=184
+```
+
+Numbers you should see on the shipped arXiv corpus. Structural wins on narrative academic text because papers use consistent heading structure; semantic is close behind. Fixed is the floor.
+
+<Callout kind="break" title="Watch it break">
+Run structural on *raw* PDF text extracted by `pypdf`. Headings are lost, whitespace is chaotic, tables are flattened into garbage. Structural chunking assumes a parser that preserves structure — `pdfplumber` with layout analysis, or `unstructured.io`, or pre-converted markdown. Chunking quality is downstream of extraction quality.
+</Callout>
+
+<MasteryGate metric="best_chunker_recall_at_5" threshold={0.75} slug="03-rag/05-chunking">
+Run `solution.py`. It benchmarks all 4 chunkers on the 20-Q eval set from lesson 3.3 and prints the best recall@5. Target: best chunker ≥ 0.75. Enter your number.
+</MasteryGate>
