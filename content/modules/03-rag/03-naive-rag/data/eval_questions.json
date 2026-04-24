@@ -1,0 +1,22 @@
+[
+  {"question": "What is the attention mechanism introduced in the Transformer paper?", "expected_arxiv_id": "1706.03762"},
+  {"question": "How does BERT handle bidirectional context during pre-training?", "expected_arxiv_id": "1810.04805"},
+  {"question": "What scaling law governs compute-optimal large language model training?", "expected_arxiv_id": "2203.15556"},
+  {"question": "What is chain-of-thought prompting?", "expected_arxiv_id": "2201.11903"},
+  {"question": "How does few-shot learning work in GPT-3?", "expected_arxiv_id": "2005.14165"},
+  {"question": "How does dense passage retrieval differ from BM25?", "expected_arxiv_id": "2004.04906"},
+  {"question": "What does REALM add to standard language model pre-training?", "expected_arxiv_id": "2002.08909"},
+  {"question": "How does retrieval-augmented generation combine parametric and non-parametric memory?", "expected_arxiv_id": "2005.11401"},
+  {"question": "What is the architecture of a residual network?", "expected_arxiv_id": "1512.03385"},
+  {"question": "How does the Vision Transformer split an image into patches?", "expected_arxiv_id": "2010.11929"},
+  {"question": "What is the latent diffusion approach to image synthesis?", "expected_arxiv_id": "2112.10752"},
+  {"question": "What are denoising diffusion probabilistic models?", "expected_arxiv_id": "2006.11239"},
+  {"question": "How do masked autoencoders learn vision representations?", "expected_arxiv_id": "2111.06377"},
+  {"question": "How does CLIP align images and text?", "expected_arxiv_id": "2103.00020"},
+  {"question": "What is the Segment Anything model's prompt interface?", "expected_arxiv_id": "2304.02643"},
+  {"question": "What is the SimCLR contrastive learning framework?", "expected_arxiv_id": "2002.05709"},
+  {"question": "How does the Adam optimizer estimate per-parameter learning rates?", "expected_arxiv_id": "1412.6980"},
+  {"question": "What problem does batch normalization solve during training?", "expected_arxiv_id": "1502.03167"},
+  {"question": "How do generative adversarial networks train a generator and discriminator?", "expected_arxiv_id": "1406.2661"},
+  {"question": "What does decoupled weight decay regularization change about Adam?", "expected_arxiv_id": "1711.05101"}
+]
