@@ -1,0 +1,123 @@
+---
+title: "httpx + tenacity: parallel fetch without melting the API"
+layer: 1
+order: 2
+minutes: 30
+cost_usd: 0
+stack: ["python", "httpx", "tenacity", "asyncio"]
+interview_qs:
+  - q: "Why does `asyncio.gather` with 1000 tasks sometimes get you rate-limited harder than a loop?"
+    answer: "Gather fires all coroutines at once. No connection pool ceiling, no concurrency cap. You send a burst that trips server-side rate limits and every task then retries simultaneously — thundering herd. Use a semaphore or httpx `limits` to cap in-flight requests."
+    difficulty: "mid"
+  - q: "Tenacity retries on all exceptions by default. Why is that dangerous for HTTP?"
+    answer: "You will retry 4xx client errors (bad auth, malformed request) that will never succeed. Scope `retry=retry_if_exception_type(httpx.HTTPStatusError)` plus a status predicate so you only retry 429/5xx."
+    difficulty: "mid"
+  - q: "What is `Retry-After` and when must you honor it?"
+    answer: "An HTTP response header (seconds or HTTP-date) telling the client when to retry after 429 or 503. Ignoring it gets you banned. Read it, sleep at least that long, then retry — overriding your exponential backoff floor."
+    difficulty: "senior"
+---
+
+```python file=fetch.py
+import asyncio, httpx
+from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
+
+@retry(
+    retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
+    wait=wait_exponential_jitter(initial=0.5, max=8),
+    stop=stop_after_attempt(5),
+)
+async def fetch(client: httpx.AsyncClient, url: str) -> dict:
+    r = await client.get(url, timeout=10)
+    if r.status_code in (429, 503):
+        raise httpx.HTTPStatusError("backoff", request=r.request, response=r)
+    r.raise_for_status()
+    return r.json()
+```
+
+That is the shape of every outbound HTTP call you will write this year. `httpx.AsyncClient` for pooled connections, `tenacity` for retry with jitter, explicit exception types.
+
+## Install and fan out
+
+```bash
+uv add httpx tenacity
+```
+
+```python file=hn_top.py
+import asyncio, httpx
+from fetch import fetch
+
+HN = "https://hacker-news.firebaseio.com/v0"
+
+async def top_stories(n: int = 100) -> list[dict]:
+    limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+    async with httpx.AsyncClient(limits=limits, http2=True) as client:
+        ids = await fetch(client, f"{HN}/topstories.json")
+        ids = ids[:n]
+        sem = asyncio.Semaphore(20)
+        async def bounded(i: int) -> dict:
+            async with sem:
+                return await fetch(client, f"{HN}/item/{i}.json")
+        return await asyncio.gather(*(bounded(i) for i in ids))
+
+if __name__ == "__main__":
+    stories = asyncio.run(top_stories(100))
+    print(len(stories), "stories in one pool, one gather")
+```
+
+The semaphore is the point. Without it, `gather` launches 100 tasks instantly, each one hammering Firebase. With it, at most 20 are in flight. The pool reuses TCP + TLS across requests, which is where most of the speedup comes from.
+
+<Callout kind="break" title="Watch it break">
+```python
+# Naive retry. Looks reasonable. Detonates under load.
+@retry(wait=wait_fixed(2), stop=stop_after_attempt(5))
+async def fetch_bad(client, url):
+    return (await client.get(url)).json()
+```
+Ten thousand clients all retry at exactly `t + 2s`, `t + 4s`, `t + 6s`. The server, which was briefly slow, now gets ten thousand synchronous retries and dies. Always use `wait_exponential_jitter` (or `wait_random_exponential`) so the herd desynchronizes.
+</Callout>
+
+## Respect `Retry-After`
+
+429 and 503 responses often include a `Retry-After` header. Read it.
+
+```python
+async def fetch_polite(client: httpx.AsyncClient, url: str) -> dict:
+    for attempt in range(5):
+        r = await client.get(url, timeout=10)
+        if r.status_code == 429:
+            wait_s = float(r.headers.get("Retry-After", 2 ** attempt))
+            await asyncio.sleep(wait_s)
+            continue
+        r.raise_for_status()
+        return r.json()
+    raise RuntimeError("rate limited")
+```
+
+Tenacity can do this too via `retry_after` on the response, but the loop form is easier to audit when an ops person asks why you keep DDoSing their API.
+
+## Timeouts are not optional
+
+```python
+# default httpx timeout is 5s connect + read. You want explicit.
+timeout = httpx.Timeout(connect=3, read=10, write=5, pool=2)
+async with httpx.AsyncClient(timeout=timeout) as client:
+    ...
+```
+
+A hung LLM stream with no timeout will pin a worker until the heat death of the universe. Set a read timeout longer than your p99 response, not your average.
+
+## Measure throughput
+
+```python
+import time
+t0 = time.perf_counter()
+stories = asyncio.run(top_stories(100))
+elapsed = time.perf_counter() - t0
+print(f"{len(stories)/elapsed:.1f} req/s")   # report this to the gate
+```
+
+Run it. Record `req/s`. The gate wants ≥ 20.
+
+<MasteryGate metric="throughput_req_per_sec" threshold={20} slug="01-foundations/02-httpx-async">
+Fetch 100 HN stories with the pooled, semaphore-bounded client above. Time the whole run. Submit `stories_fetched / elapsed_seconds`. Anything below 20 req/s means your semaphore is too small, you forgot to reuse the client, or your network is the bottleneck — not your code.
+</MasteryGate>

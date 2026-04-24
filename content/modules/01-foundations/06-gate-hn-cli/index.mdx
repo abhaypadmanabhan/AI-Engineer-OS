@@ -1,0 +1,144 @@
+---
+title: "Layer 1 gate: ship an HN CLI"
+layer: 1
+order: 6
+minutes: 45
+cost_usd: 0
+stack: ["python", "httpx", "pydantic", "tenacity"]
+gate:
+  metric: "stories_returned_valid_json"
+  threshold: 20
+interview_qs:
+  - q: "Why validate the output of your own CLI against a Pydantic schema before printing?"
+    answer: "The CLI is an API. Downstream tools (grep, jq, your bash pipeline, your next agent) expect a shape. Validating before emit means you never ship a JSON blob with a missing field to a consumer that will silently misbehave. Fail loud at the producer."
+    difficulty: "mid"
+  - q: "Your CLI hits 25 HN items but only 22 validate. What should the process exit code be?"
+    answer: "Nonzero. A CLI that prints partial data with exit 0 is worse than one that prints nothing with exit 1, because pipelines don't check. Either re-fetch the failed ones, or exit 1 with the count on stderr. Never let a partial success look like a total one."
+    difficulty: "senior"
+  - q: "Why not use `requests` in a sync loop here? The data is small."
+    answer: "Fetching 20 items serially over ~150ms each = 3 seconds wall-clock. The async version finishes in ~300ms. Same code complexity. The moment you think 'small data,' add a `--limit 500` flag and watch sync eat 75 seconds. Build the right shape once."
+    difficulty: "junior"
+---
+
+```bash
+uv add httpx tenacity pydantic
+python solution.py --limit 20 --json | jq '.[0]'
+```
+
+This is the Layer 1 gate. Build a real CLI that fetches HN top stories, validates every row against a Pydantic schema, and emits strict JSON on stdout. Exit nonzero if fewer than `--limit` rows validate.
+
+## The schema
+
+```python file=schema.py
+from pydantic import BaseModel, Field, HttpUrl
+
+class Story(BaseModel):
+    id: int
+    by: str
+    title: str = Field(min_length=1)
+    score: int = Field(ge=0)
+    time: int
+    url: HttpUrl | None = None
+    descendants: int | None = Field(default=None, ge=0)
+```
+
+This is the contract. If HN gives you something that doesn't fit, drop it. The schema is your wire format.
+
+## The CLI
+
+```python file=cli.py
+import argparse, asyncio, json, sys
+from fetch import top_stories
+from schema import Story
+from pydantic import ValidationError
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("command", choices=["top"])
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--json", action="store_true")
+    return p.parse_args()
+
+async def main():
+    args = parse_args()
+    raw = await top_stories(args.limit)
+    valid: list[Story] = []
+    for item in raw:
+        try:
+            valid.append(Story.model_validate(item))
+        except ValidationError:
+            continue
+    if args.json:
+        print(json.dumps([s.model_dump(mode="json") for s in valid], indent=2))
+    else:
+        for s in valid:
+            print(f"{s.score:>4}  {s.title}  ({s.by})")
+    if len(valid) < args.limit:
+        print(f"warn: only {len(valid)}/{args.limit} validated", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+## Wire it up
+
+```python file=fetch.py
+# Reused from lesson 02. The async pool + tenacity retry from earlier.
+import asyncio, httpx
+from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
+
+HN = "https://hacker-news.firebaseio.com/v0"
+
+@retry(
+    retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
+    wait=wait_exponential_jitter(initial=0.3, max=5),
+    stop=stop_after_attempt(4),
+    reraise=True,
+)
+async def _get(client, url):
+    r = await client.get(url, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+async def top_stories(limit: int) -> list[dict]:
+    async with httpx.AsyncClient(limits=httpx.Limits(max_connections=20)) as c:
+        ids = (await _get(c, f"{HN}/topstories.json"))[:limit]
+        sem = asyncio.Semaphore(20)
+        async def one(i):
+            async with sem:
+                return await _get(c, f"{HN}/item/{i}.json")
+        return await asyncio.gather(*(one(i) for i in ids))
+```
+
+## Run it
+
+```bash
+$ python solution.py top --limit 20 --json | jq 'length'
+20
+$ python solution.py top --limit 20 --json | jq '.[0].title'
+"Show HN: ..."
+$ python solution.py top --limit 5
+ 412  Show HN: something cool  (pg)
+ 387  Ask HN: what's broken?  (dang)
+ ...
+```
+
+Pipe to `jq`, grep for titles, feed into the next lesson's RAG demo. The JSON is stable because the schema says it is.
+
+## The gate
+
+```bash
+python eval.py
+# PASS stories_returned_valid_json=20/20
+```
+
+`eval.py` spawns `solution.py top --limit 20 --json`, parses the output, re-validates every row against the same `Story` schema, and exits 0 only if all 20 pass. If HN happens to have a deleted item in the top 20, refetch — this is a real-world data cleanliness check, not a toy.
+
+<Callout kind="tip" title="Why this is the gate">
+Layer 1 is about trusting your tools: async I/O, validated data, CLIs that don't lie. If this one runs green, you have internalized the four habits the rest of the course assumes. If it doesn't, the bug is almost always a missing semaphore or an unvalidated field, both of which are faster to fix here than inside a retrieval pipeline later.
+</Callout>
+
+<MasteryGate metric="stories_returned_valid_json" threshold={20} slug="01-foundations/06-gate-hn-cli">
+Run `python eval.py`. It must print `PASS` and exit 0 with 20 rows valid. Enter the count of validated stories (should be 20).
+</MasteryGate>

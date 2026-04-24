@@ -1,0 +1,130 @@
+---
+title: "Pydantic v2 as your LLM firewall"
+layer: 1
+order: 3
+minutes: 30
+cost_usd: 0
+stack: ["python", "pydantic"]
+interview_qs:
+  - q: "Pydantic v1 vs v2 — what changed that matters for LLM code?"
+    answer: "v2 is rewritten in Rust (pydantic-core), 5-50x faster, with a saner validator API (`@field_validator`, `@model_validator`). `model_validate_json` parses + validates in one pass — critical when you're throwing thousands of LLM outputs at it. v1's `parse_obj_as` is gone; use `TypeAdapter`."
+    difficulty: "mid"
+  - q: "You have `category: Literal['bug','billing']`. The LLM returns `'Bug '` with whitespace. What happens and how do you handle it?"
+    answer: "ValidationError — Literal is strict. Add a `@field_validator('category', mode='before')` that strips and lowercases, or use `str_strip_whitespace=True` in `model_config` + a separate normalization step. Never loosen to `str` just to make it pass."
+    difficulty: "mid"
+  - q: "Why is `model_validate_json` preferred over `json.loads` then `model_validate`?"
+    answer: "It parses JSON directly into the core validator in one trip through Rust, skipping the intermediate Python dict. Roughly 2x faster and gives better error paths (JSON line/column) when the payload is malformed."
+    difficulty: "senior"
+---
+
+```python file=schema.py
+from pydantic import BaseModel, Field, field_validator
+from typing import Literal
+
+class Classification(BaseModel):
+    category: Literal["billing", "bug", "feature", "spam"]
+    confidence: float = Field(ge=0, le=1)
+    reasoning: str = Field(min_length=10, max_length=500)
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def normalize(cls, v: str) -> str:
+        return v.strip().lower() if isinstance(v, str) else v
+```
+
+Pydantic is the only thing standing between your typed Python and the JSON-shaped lies an LLM hands back. Treat it as a firewall.
+
+## Install
+
+```bash
+uv add pydantic
+```
+
+## Parse or reject
+
+```python file=parse.py
+from pydantic import ValidationError
+from schema import Classification
+
+raw = '{"category":"Bug ","confidence":0.92,"reasoning":"Stack trace cites null deref in line 42 of user.py"}'
+
+try:
+    c = Classification.model_validate_json(raw)
+    print(c.category, c.confidence)     # "bug" 0.92
+except ValidationError as e:
+    print(e.errors())
+```
+
+Two things are happening. `model_validate_json` parses the JSON string directly in Rust, then the `normalize` validator lowers the category, then `Literal` enforces the allowed set. If any step fails you get a structured `ValidationError` with the field path.
+
+## Reject the bad stuff on purpose
+
+```python file=reject.py
+samples = [
+    '{"category":"bug","confidence":0.9,"reasoning":"real stack trace here, plenty long"}',
+    '{"category":"urgent","confidence":0.9,"reasoning":"not a valid category"}',   # bad literal
+    '{"category":"bug","confidence":1.4,"reasoning":"oops"}',                      # bad range + too short
+    '{"category":"bug","confidence":0.9}',                                         # missing field
+    'not even json',                                                               # malformed
+]
+
+def try_parse(s: str) -> Classification | None:
+    try:
+        return Classification.model_validate_json(s)
+    except ValidationError:
+        return None
+
+parsed = [try_parse(s) for s in samples]
+reject_rate = sum(p is None for p in parsed) / len(samples)
+print(f"rejected {reject_rate:.0%} of garbage")   # 80%
+```
+
+A good schema rejects the bad inputs. The gate below wants ≥ 95% rejection on a pile of hand-crafted malformed payloads.
+
+## Use it as a tool-call schema
+
+Claude's tool use expects a JSON Schema. Pydantic gives you one for free.
+
+```python
+from schema import Classification
+import json
+
+tool = {
+    "name": "classify_ticket",
+    "description": "Classify a customer support ticket.",
+    "input_schema": Classification.model_json_schema(),
+}
+print(json.dumps(tool, indent=2)[:200])
+```
+
+The Anthropic SDK will then enforce the shape server-side. You still re-validate with `model_validate` on the response — belt and suspenders, because the model can still output malformed arguments in edge cases.
+
+```python file=call.py
+# Shape only — no live call. Cost in frontmatter is 0.
+import os
+# client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+# resp = client.messages.create(
+#     model="claude-sonnet-4-6",
+#     temperature=0,
+#     max_tokens=512,
+#     tools=[tool],
+#     messages=[{"role": "user", "content": "My invoice double-charged me."}],
+# )
+# args = resp.content[0].input                     # dict from the model
+# validated = Classification.model_validate(args)  # ← the firewall
+```
+
+## Nested models and `TypeAdapter` for lists
+
+```python
+from pydantic import TypeAdapter
+
+batch = TypeAdapter(list[Classification])
+items = batch.validate_json('[{"category":"bug","confidence":0.9,"reasoning":"xxxxxxxxxx"}]')
+```
+
+`TypeAdapter` is how you validate things that aren't top-level `BaseModel`s — lists, dicts, discriminated unions. Use it instead of the deprecated v1 `parse_obj_as`.
+
+<MasteryGate metric="schema_reject_rate" threshold={0.95} slug="01-foundations/03-pydantic">
+Run `eval.py`. It feeds 20 malformed payloads and expects your schema to reject ≥ 19 of them while accepting the one valid payload. Enter the achieved `rejected / malformed_total` (should be 1.0).
+</MasteryGate>

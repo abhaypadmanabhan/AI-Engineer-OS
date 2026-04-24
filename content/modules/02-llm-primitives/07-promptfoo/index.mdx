@@ -1,0 +1,140 @@
+---
+title: "promptfoo — version your prompts like code"
+layer: 2
+order: 7
+minutes: 35
+cost_usd: 0.05
+p95_latency_ms: 4000
+stack: ["promptfoo", "anthropic"]
+interview_qs:
+  - q: "Why is promptfoo distributed on npm, not PyPI?"
+    answer: "It's a Node CLI that shells out to providers via HTTP. The runner, YAML parser, and web UI are all JavaScript. You can call it from Python projects — it does not care what language your app is in."
+    difficulty: "junior"
+  - q: "What's the difference between an assertion and a metric in promptfoo?"
+    answer: "Assertions are per-test pass/fail (equals, contains, llm-rubric). Metrics are numeric aggregates (accuracy, latency, cost) across the matrix. CI gates on assertion pass-rate; dashboards track metrics over commits."
+    difficulty: "mid"
+  - q: "Your promptfoo regression suite passes locally but a teammate's PR passes with 0 tests. What happened?"
+    answer: "YAML indentation drift collapsed their `tests:` list into a string, so the runner iterated zero cases and reported 100% pass. Always assert test count in CI — e.g., fail if promptfoo reports < N tests."
+    difficulty: "senior"
+---
+
+Prompts are code. Version them, test them, regress them.
+
+```bash file=setup.sh
+# promptfoo is an npm CLI — exception to our uv-default rule.
+npm install -g promptfoo
+promptfoo init
+# Generates promptfooconfig.yaml + a tests folder.
+```
+
+```yaml file=promptfooconfig.yaml
+description: "Support-ticket classification — 4-way prompt bakeoff"
+
+providers:
+  - id: anthropic:messages:claude-sonnet-4-6
+    config:
+      temperature: 0
+      max_tokens: 10
+
+prompts:
+  - file://prompts/zero_shot.txt
+  - file://prompts/few_shot.txt
+  - file://prompts/cot.txt
+  - file://prompts/cot_delim.txt
+
+tests: file://tests/tickets.yaml
+
+defaultTest:
+  assert:
+    - type: equals
+      value: "{{category}}"
+```
+
+<CostMeter cost="$0.05" latency="4.0s" tokens="3k" />
+
+```yaml file=tests/tickets.yaml
+- vars:
+    ticket: "My card was charged twice this month."
+    category: billing
+- vars:
+    ticket: "The app crashes when I open settings."
+    category: bug
+- vars:
+    ticket: "Add dark mode please."
+    category: feature
+- vars:
+    ticket: "I cannot log in since yesterday's update."
+    category: account
+# ... 10 total
+```
+
+```bash file=run.sh
+promptfoo eval --output results.json
+promptfoo view   # opens a local dashboard at :15500
+
+# Cost math: 4 prompts * 10 tickets * ~200 in + ~5 out each
+# input = 8000 tok, output = 200 tok
+# (8000/1e6)*3 + (200/1e6)*15 = $0.024 + $0.003 = $0.027 ~ $0.05 with eval overhead
+```
+
+## Why YAML, not Python
+
+Prompts live beside code but not in code. YAML lets you:
+
+1. **Diff prompts in PRs.** A wording change shows up as a clean line-level diff.
+2. **Branch experimental prompts.** `cot_delim.txt` is one file on a feature branch.
+3. **Gate merges on regression.** CI runs `promptfoo eval --fail-on-metric accuracy<0.90`.
+
+This is the same loop as unit tests, applied to prompts.
+
+## Running it in CI
+
+```yaml file=.github/workflows/prompts.yml
+name: prompt-regression
+on: [pull_request]
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '20'}
+      - run: npm install -g promptfoo
+      - env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: promptfoo eval --output out.json
+      - run: |
+          jq '.results.stats.successes >= 36' out.json | grep true
+          # 36 = 4 prompts * 10 tests * 0.9 threshold
+```
+
+<Callout kind="break" title="Watch it break">
+```yaml
+# A teammate opens a PR with this:
+tests:
+file://tests/tickets.yaml   # missing indent — now a sibling key
+```
+`promptfoo eval` silently loads **zero tests** because `tests` is now the empty string `""`. Every prompt "passes" vacuously. The PR merges green. Production accuracy tanks next deploy.
+
+The fix: add a CI guard that asserts `results.stats.testCount >= N`. Also pin `promptfoo` version; new majors have changed YAML parsing rules twice in 2025.
+</Callout>
+
+## The output you actually read
+
+```bash
+$ promptfoo eval
+┌─────────────┬────────┬──────────┬───────┐
+│ prompt      │ pass % │ cost $   │ p95ms │
+├─────────────┼────────┼──────────┼───────┤
+│ zero_shot   │   0.60 │  0.004   │  820  │
+│ few_shot    │   0.85 │  0.006   │  910  │
+│ cot         │   0.80 │  0.018   │ 2100  │
+│ cot_delim   │   0.95 │  0.019   │ 2150  │
+└─────────────┴────────┴──────────┴───────┘
+```
+
+`cot_delim` wins. Commit that prompt. Next feature branch, someone edits the prompt, pass-rate drops, CI blocks the merge. That is the entire point.
+
+<MasteryGate metric="prompt_matrix_winner_accuracy" threshold={0.9} slug="02-llm-primitives/07-promptfoo">
+Run the 4-prompt x 10-ticket matrix. Report the winning prompt's pass rate. Target: ≥ 0.9.
+</MasteryGate>

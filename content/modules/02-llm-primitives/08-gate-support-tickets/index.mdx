@@ -1,0 +1,141 @@
+---
+title: "Layer 2 gate — 12-class ticket classifier"
+layer: 2
+order: 8
+minutes: 60
+cost_usd: 0.15
+p95_latency_ms: 1800
+stack: ["anthropic"]
+gate:
+  metric: "ticket_classification_accuracy"
+  threshold: 0.88
+interview_qs:
+  - q: "Why 12 classes instead of 4?"
+    answer: "Real support queues are 10-20 classes. At 4, prompt engineering alone hits 95%+ and teaches you nothing. At 12, zero-shot plateaus around 70% and only structured prompts + validation + few-shot breaks through to 88%+."
+    difficulty: "mid"
+  - q: "Your classifier hits 0.88 on the labeled set but drifts to 0.74 in production. What's the first thing you check?"
+    answer: "Label distribution drift. Run the production inputs through the same classifier offline, manually label a stratified sample of disagreements, and confirm whether the class mix has shifted or the model's mapping has — two very different fixes."
+    difficulty: "senior"
+  - q: "Why gate on accuracy and not on F1 for this task?"
+    answer: "Accuracy is simpler to reason about when classes are roughly balanced and misclassification costs are symmetric. If any class is rare or has asymmetric cost (e.g. 'security' false-negatives are disastrous) switch to per-class recall or F1-macro."
+    difficulty: "mid"
+---
+
+Classify 50+ real support tickets into 12 categories, ≥88% accuracy. This is the Layer 2 exit.
+
+```python file=classify.py
+import os, json
+from anthropic import Anthropic
+from pydantic import BaseModel
+from typing import Literal
+
+Category = Literal["billing", "bug", "feature", "account", "security",
+                   "performance", "integration", "documentation",
+                   "refund", "outage", "abuse", "other"]
+
+class Prediction(BaseModel):
+    category: Category
+
+TOOL = {
+    "name": "classify_ticket",
+    "description": "Assign one category to a support ticket.",
+    "input_schema": Prediction.model_json_schema(),
+}
+
+SYSTEM = """You are a triage bot for a SaaS support queue.
+Categories and when to use them:
+- billing: charges, invoices, plan changes (not refunds)
+- bug: something broken or erroring
+- feature: request for new functionality
+- account: login, email, username, merges (non-security)
+- security: 2FA, suspicious logins, vulnerabilities, account takeover
+- performance: slow responses, timeouts, latency regressions (not outages)
+- integration: third-party connectors (Slack, Jira, Zapier, CRM)
+- documentation: docs wrong, missing, or outdated
+- refund: explicit refund request
+- outage: whole service or region down
+- abuse: user-to-user harassment, spam, NSFW, scams
+- other: greetings, feedback, unrelated
+
+Pick exactly one."""
+
+EXAMPLES = """<example>
+<ticket>My card was charged twice — refund the duplicate.</ticket>
+<category>billing</category>
+</example>
+<example>
+<ticket>Please refund last month — we didn't use it.</ticket>
+<category>refund</category>
+</example>
+<example>
+<ticket>I think someone signed into my account from Russia.</ticket>
+<category>security</category>
+</example>
+<example>
+<ticket>Your API is returning 503s since 14:00 UTC.</ticket>
+<category>outage</category>
+</example>"""
+
+def classify(client: Anthropic, text: str) -> str:
+    r = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=60,
+        temperature=0,
+        system=SYSTEM,
+        tools=[TOOL],
+        tool_choice={"type": "tool", "name": "classify_ticket"},
+        messages=[{"role": "user",
+                   "content": f"{EXAMPLES}\n<ticket>{text}</ticket>"}],
+    )
+    call = next(b for b in r.content if b.type == "tool_use")
+    return Prediction.model_validate(call.input).category
+
+def run_eval(path: str = "data/tickets.jsonl") -> float:
+    client = Anthropic()
+    rows = [json.loads(l) for l in open(path)]
+    hits = sum(classify(client, r["text"]) == r["category"] for r in rows)
+    return hits / len(rows)
+
+# Cost math (55 tickets, claude-sonnet-4-6):
+# per call: ~450 input tok (system + 4 examples + ticket) + ~20 output tok
+# input  = 55 * 450 = 24,750 tok  -> (24750/1e6)*3  = $0.0743
+# output = 55 *  20 =  1,100 tok  -> ( 1100/1e6)*15 = $0.0165
+# total ~ $0.091 on 55 tickets; ~$0.33 on a full 200-ticket run.
+```
+
+<CostMeter cost="$0.15" latency="1.8s" tokens="26k" />
+
+## Why this is the gate
+
+You have all the tools now: structured outputs (lesson 4), few-shot + XML (lesson 5), delimiters and CoT where helpful (lesson 6), and a regression harness (lesson 7). This task needs all four.
+
+**Design choices that matter:**
+
+- **Tool use, not free-form text.** `category` is a `Literal[12]` — the model is constrained to legal values, no fuzzy-match post-processing.
+- **Category definitions in the system prompt.** Ambiguity between `billing` and `refund`, or `performance` and `outage`, is resolved up front.
+- **Four boundary-case examples.** Each one disambiguates a pair of classes that zero-shot confuses.
+- **`temperature=0`.** Classification is deterministic-only.
+
+## Run it
+
+```bash file=run.sh
+uv add anthropic pydantic
+python solution.py              # prints accuracy
+python eval.py                  # exits 0 if accuracy >= 0.88
+```
+
+## Scaling to 200 tickets
+
+The bundled `data/tickets.jsonl` has 55 labeled tickets. For the full gate, append 145 more rows from a real source (public GitHub issues, your own product's inbox, or HN's `askhn` API). Do not generate synthetic rows with another LLM — you will grade the classifier on its own hallucinations.
+
+<Callout kind="warn">
+If your full-set run exceeds $0.50, drop to `claude-haiku-4-5` ($1/$5 per Mtok) for a ~3x cost cut. Re-verify accuracy — haiku often loses 3–5 pp on 12-way classification and may no longer clear the gate.
+</Callout>
+
+## What counts as passing
+
+`eval.py` exits 0 iff `correct / total >= 0.88` on `data/tickets.jsonl`. That is the Layer 2 exit criterion. Ship it, commit the prompt, and move to Layer 3 (RAG).
+
+<MasteryGate metric="ticket_classification_accuracy" threshold={0.88} slug="02-llm-primitives/08-gate-support-tickets">
+Run `python eval.py`. Enter the reported accuracy. Pass: ≥ 0.88.
+</MasteryGate>

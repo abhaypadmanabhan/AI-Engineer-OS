@@ -1,0 +1,137 @@
+---
+title: "Pandas: the 5% you need for LLM data prep"
+layer: 1
+order: 4
+minutes: 25
+cost_usd: 0
+stack: ["python", "pandas"]
+interview_qs:
+  - q: "Why does `df.to_dict(orient='records')` sometimes emit `NaN` that breaks your JSON encoder?"
+    answer: "Pandas represents missing values as `float('nan')`, which is not valid JSON. Options: `df.where(df.notna(), None)` before conversion, or `df.replace({np.nan: None}).to_dict('records')`, or use `df.to_json(orient='records')` which emits `null` correctly."
+    difficulty: "mid"
+  - q: "You read a CSV of HN IDs and half of them become floats. Why?"
+    answer: "Any NaN in an int column forces the whole column to float64 because numpy ints don't support NaN. Fix: pass `dtype={'id': 'Int64'}` (capital I — pandas nullable int) or `dtype_backend='pyarrow'` which has native null support across all dtypes."
+    difficulty: "mid"
+  - q: "`groupby` + `agg` vs `groupby` + `apply` — which to reach for and why?"
+    answer: "`agg` when you want named aggregations on columns — vectorized, fast, returns a clean frame. `apply` when you need a custom per-group function that can't be expressed as aggregations. `apply` is an order of magnitude slower; only use it when `agg`/`transform` can't do the job."
+    difficulty: "senior"
+---
+
+```python file=load.py
+import pandas as pd
+
+df = pd.read_csv(
+    "hn_top.csv",
+    dtype={"id": "Int64", "score": "Int64", "descendants": "Int64"},  # nullable ints
+    parse_dates=["time"],
+)
+print(df.dtypes)
+print(df.shape)
+```
+
+Pandas is 90% plumbing and 10% tools you actually use. Learn the 10%.
+
+## Install and generate a real dataset
+
+```bash
+uv add pandas
+python -c "from solution import write_sample; write_sample()"   # pulls real HN data
+```
+
+`write_sample()` hits the real Firebase API and caches 50 rows to `hn_top.csv`. Everything below reads that file.
+
+## dtypes are the whole ballgame
+
+```python
+df = pd.read_csv("hn_top.csv")
+df.dtypes
+# id             float64   ← nulls demoted int to float
+# score          float64
+# title          object
+# time           object    ← strings, not datetimes
+
+df = pd.read_csv(
+    "hn_top.csv",
+    dtype={"id": "Int64", "score": "Int64"},
+    parse_dates=["time"],
+)
+df.dtypes
+# id             Int64           ← nullable, stays int
+# score          Int64
+# title          object
+# time           datetime64[ns]
+```
+
+Wrong dtypes silently break downstream code. An LLM prompt that says "story 42039819" but gets "42039819.0" from `.to_dict('records')` is a real bug you will ship.
+
+## Select, filter, sort
+
+```python
+top = (
+    df.loc[df["score"] >= 100, ["id", "title", "by", "score"]]
+      .sort_values("score", ascending=False)
+      .head(10)
+)
+```
+
+Use `.loc[mask, columns]` for both row filter and column select in one shot. Chaining is readable when you break lines.
+
+## groupby + agg — the money move
+
+```python
+by_user = (
+    df.groupby("by", dropna=True)
+      .agg(
+          stories=("id", "count"),
+          total_score=("score", "sum"),
+          mean_score=("score", "mean"),
+      )
+      .sort_values("total_score", ascending=False)
+      .head(10)
+)
+```
+
+Named aggregation (`agg(new_col=(src_col, func))`) is the clearest syntax. Avoid the dict form — it is deprecated for column-level aggs and the output shape surprises people.
+
+## merge vs join vs concat
+
+```python
+authors = pd.DataFrame({"by": ["dang", "pg"], "is_mod": [True, True]})
+joined = df.merge(authors, on="by", how="left")   # left-join on shared key
+# joined["is_mod"] is NaN for unknown authors
+```
+
+`merge` is SQL join. `concat` is UNION ALL. `join` is a shortcut for index-aligned merges. Use `merge` unless you have a reason to use the others. Always pass `how=` explicitly.
+
+## Emit clean records for an LLM prompt
+
+```python
+import numpy as np
+
+records = (
+    df.head(20)
+      .assign(time=lambda d: d["time"].astype(str))   # datetimes → ISO strings
+      .replace({np.nan: None})                        # NaN → None → null in JSON
+      .to_dict(orient="records")
+)
+# records is a list[dict] ready to drop into a JSON-serializing prompt template.
+```
+
+Three things bite here: datetime isn't JSON-serializable (cast to string), NaN isn't valid JSON (replace with None), and categorical/Int64 dtypes need to stay intact through the `to_dict` call. Test the output by round-tripping through `json.dumps`.
+
+<Callout kind="info" title="to_json vs to_dict">
+If you only need a JSON string, `df.to_json(orient='records', date_format='iso')` handles all three gotchas in one call. Use `to_dict` only when you need the intermediate Python objects (e.g., to splice into a larger structure).
+</Callout>
+
+## groupby correctness check
+
+```python
+# Sanity: sum of per-group counts == total rows (after dropping null keys)
+assert by_user["stories"].sum() == df["by"].dropna().shape[0]
+```
+
+The eval for this lesson is a single assertion: your `by_user` frame, grouped on the cached `hn_top.csv`, must match the reference counts exactly.
+
+<MasteryGate metric="groupby_correct" threshold={1} slug="01-foundations/04-pandas-minimum">
+Run `python eval.py`. It loads `hn_top.csv`, groups by author, and checks your top-author row count against a known-good fixture. Pass = 1, fail = 0.
+</MasteryGate>

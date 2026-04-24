@@ -1,0 +1,79 @@
+---
+title: "What an LLM actually is"
+layer: 2
+order: 1
+minutes: 10
+cost_usd: 0
+stack: ["anthropic"]
+interview_qs:
+  - q: "In one sentence, what does an LLM do at inference time?"
+    answer: "Given a token sequence, it outputs a probability distribution over the next token, then samples one — repeated autoregressively until stop."
+    difficulty: "junior"
+  - q: "Why is temperature=0 not fully deterministic across providers?"
+    answer: "Argmax ties, batched kernel non-determinism on GPU, and backend routing across model shards. Providers approximate determinism but rarely guarantee it."
+    difficulty: "mid"
+  - q: "Why does the same prompt sometimes produce different-length outputs at temperature=0?"
+    answer: "Stop sampling depends on when the model emits an end-of-turn token, which can shift if the server batches your request with different neighbors or routes to a slightly different kernel."
+    difficulty: "senior"
+---
+
+An LLM is a next-token predictor. That is the entire mental model.
+
+```python file=one_token.py
+import os
+from anthropic import Anthropic
+
+client = Anthropic()
+r = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1,
+    temperature=0,
+    messages=[{"role": "user", "content": "The capital of France is"}],
+)
+print(r.content[0].text)
+# " Paris"
+```
+
+Everything else — chat, tool use, RAG, agents — is scaffolding around repeated calls to this predictor.
+
+<DiagramMermaid>{`graph LR
+A[Your text] --> B[Tokenize]
+B --> C[Transformer: P next token]
+C --> D[Sample 1 token]
+D --> E{Stop?}
+E -- no --> B
+E -- yes --> F[Decoded string]`}</DiagramMermaid>
+
+```python file=loop.py
+# Autoregressive in pseudocode
+tokens = tokenize(prompt)
+while not stop(tokens):
+    logits = model.forward(tokens)          # shape: [vocab_size]
+    probs  = softmax(logits / temperature)  # temperature reshapes the distribution
+    next_t = sample(probs, top_p=0.95)
+    tokens.append(next_t)
+return detokenize(tokens)
+```
+
+Three facts that govern every API call you will ever make:
+
+1. **Latency scales with output tokens.** Input tokens are processed in parallel. Output tokens are serial. A 2000-token prompt with a 100-token answer is faster than a 100-token prompt with a 2000-token answer.
+2. **Cost scales with both, asymmetrically.** Output tokens are 3–5x the price of input tokens on frontier models. Prefer retrieval + short outputs over long generated context.
+3. **`temperature=0` is a knob, not a promise.** Providers do not guarantee byte-identical output across runs. Tests that compare raw strings will flake.
+
+```python file=contrast.py
+# Same idea, OpenAI SDK
+from openai import OpenAI
+r = OpenAI().responses.create(
+    model="gpt-5",
+    max_output_tokens=1,
+    input="The capital of France is",
+)
+print(r.output_text)
+```
+
+That is the whole primitive. Everything in Layer 2 builds on it.
+
+<MasteryGate metric="can_explain_in_one_sentence" threshold={1} slug="02-llm-primitives/01-what-is-llm">
+Write a single sentence: "Given X, an LLM outputs Y, sampled Z-ly." Score 1 if your sentence names tokens, a probability distribution, and autoregression. Otherwise 0.
+</MasteryGate>

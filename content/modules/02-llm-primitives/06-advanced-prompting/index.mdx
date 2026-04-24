@@ -1,0 +1,145 @@
+---
+title: "Chain-of-thought, prefilling, self-consistency"
+layer: 2
+order: 6
+minutes: 45
+cost_usd: 0.05
+p95_latency_ms: 3000
+stack: ["anthropic"]
+interview_qs:
+  - q: "Self-consistency at n=5 triples your cost. When is it worth it?"
+    answer: "When the task has a verifiable answer and accuracy matters more than latency: math, code generation with tests, structured extraction where a wrong answer is expensive to fix downstream."
+    difficulty: "mid"
+  - q: "Why prefill the assistant turn with <reasoning> instead of asking 'think step by step'?"
+    answer: "Prefilling forces the model into a structure you can post-process. 'Think step by step' is a suggestion that Claude often ignores or inlines messily. Prefilling with an opening tag is a contract the model must close."
+    difficulty: "senior"
+  - q: "Decomposition — when should you split one LLM call into several?"
+    answer: "When the task has independent sub-tasks (extract, then classify, then summarize) or when a single call's output would be too long or too tangled to validate. Smaller calls are cheaper, faster (parallel), and each is independently eval-able."
+    difficulty: "mid"
+---
+
+Chain-of-thought lifts hard-reasoning accuracy. Prefilling controls where it leaks.
+
+```python file=cot.py
+import os
+from anthropic import Anthropic
+
+client = Anthropic()
+
+QUESTION = ("A bookstore sold 42 books on Monday, twice that on Tuesday, "
+            "and on Wednesday sold 15 fewer than Tuesday. How many total?")
+
+def zero_shot() -> str:
+    r = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=10,
+        temperature=0,
+        messages=[{"role": "user",
+                   "content": QUESTION + " Answer with a number only."}],
+    )
+    return r.content[0].text.strip()
+
+def cot() -> str:
+    r = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=300,
+        temperature=0,
+        messages=[
+            {"role": "user", "content": QUESTION},
+            {"role": "assistant", "content": "<reasoning>\n"},
+        ],
+    )
+    text = "<reasoning>\n" + r.content[0].text
+    # answer is after </reasoning>
+    return text.split("</reasoning>")[-1].strip()
+```
+
+<CostMeter cost="$0.05" latency="3.0s" tokens="3k" />
+
+## Self-consistency: sample N, majority vote
+
+```python file=self_consistency.py
+from collections import Counter
+
+def self_consistency(n: int = 5) -> str:
+    answers = []
+    for _ in range(n):
+        r = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=300,
+            temperature=0.8,  # diversity
+            messages=[
+                {"role": "user", "content": QUESTION},
+                {"role": "assistant", "content": "<reasoning>\n"},
+            ],
+        )
+        text = "<reasoning>\n" + r.content[0].text
+        ans = text.split("</reasoning>")[-1].strip()
+        # Extract first integer token
+        import re
+        m = re.search(r"-?\d+", ans)
+        if m:
+            answers.append(m.group(0))
+    winner, count = Counter(answers).most_common(1)[0]
+    return winner
+
+# Cost math for n=5: each call ~200 in + ~250 out
+# 5 * ((200/1e6)*3 + (250/1e6)*15) = 5 * ($0.0006 + $0.00375) = 5 * $0.00435 = $0.022
+# Plus zero-shot + cot baselines ~$0.03 total. Call it $0.05 for a full lab run.
+```
+
+Self-consistency at `n=5` beats single-sample CoT on GSM8K-style problems by 5–15 points. It costs `n` times as much.
+
+## Decomposition
+
+One hard prompt → several easy prompts. Each one is cheap, testable, and parallelizable.
+
+```python file=decompose.py
+# Bad: "Extract all companies, classify by sector, rank by revenue."
+# Good:
+# 1. extract_companies(text)      -> List[str]
+# 2. classify_sector(company)     -> Literal[...]   (parallel map)
+# 3. rank_by_revenue(companies)   -> List[str]
+```
+
+Each sub-call is under 100 tokens and has a clean eval. The composite accuracy is the product of sub-accuracies — easier to move than one tangled number.
+
+<Callout kind="break" title="Watch it break">
+```python
+# CoT reasoning bleeding into production output.
+r = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=300,
+    temperature=0,
+    messages=[{"role": "user",
+               "content": QUESTION + " Think step by step, then answer."}],
+)
+# Response:
+# "Let me work through this. Monday: 42. Tuesday: 84. Wednesday: 69. Total: 195.
+#  So the answer is 195."
+#
+# You wanted "195". You got a paragraph. Your downstream JSON parse crashes.
+```
+The fix is **not** to remove CoT — you lose accuracy. The fix is to **scope the reasoning**: prefill `<reasoning>` and instruct the model to close it with `</reasoning>` before the final answer. Then `split("</reasoning>")[-1]` gives you the clean answer, and you can log the reasoning for audit without shipping it to users.
+</Callout>
+
+## Prefilling for format control
+
+```python file=prefill_json.py
+r = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=200,
+    temperature=0,
+    messages=[
+        {"role": "user", "content": "List 3 authors of the ReAct paper."},
+        {"role": "assistant", "content": '{"authors": ['},
+    ],
+)
+# Model must continue from the open bracket -> always valid JSON start.
+```
+
+Prefilling is the cheapest tool-free way to enforce format. Tool use (lesson 04) is still stronger for anything with a schema.
+
+<MasteryGate metric="self_consistency_accuracy" threshold={0.85} slug="02-llm-primitives/06-advanced-prompting">
+Run self-consistency at `n=5` on a 20-problem math set. Compute accuracy vs. the gold answers. Target: ≥ 0.85.
+</MasteryGate>

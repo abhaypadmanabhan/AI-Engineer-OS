@@ -1,0 +1,142 @@
+---
+title: "Debugging async Python without losing your mind"
+layer: 1
+order: 5
+minutes: 25
+cost_usd: 0
+stack: ["python", "pdb", "structlog"]
+interview_qs:
+  - q: "Your logs show `request_id=abc` on one line and the next line has no id. What went wrong?"
+    answer: "Stdlib `logging` doesn't carry context across `await` by default — the logger adapter is bound to the caller's thread, not the task. Use `structlog` with `contextvars` processors, or `logging.LoggerAdapter` set up per-task, so `request_id` rides along through coroutine switches."
+    difficulty: "mid"
+  - q: "Why does `breakpoint()` sometimes hang in an async function?"
+    answer: "pdb blocks the event loop. Other pending tasks (timers, HTTP reads) can't run while you're at the prompt. For most debugging that's fine — just be aware nothing else is making progress. For cases where you need the loop running, use `aiomonitor` or logpoint-style `log.info(...)` instead of a breakpoint."
+    difficulty: "mid"
+  - q: "What's `PYTHONBREAKPOINT` and why is it useful?"
+    answer: "An env var that overrides what `breakpoint()` calls. Set to `ipdb.set_trace` for a better REPL, or `0` to disable all breakpoints in prod/CI without editing code. Lets you ship `breakpoint()` calls behind feature flags."
+    difficulty: "senior"
+---
+
+```python file=buggy.py
+import asyncio, httpx
+
+async def fetch_title(client, id: int) -> str:
+    url = f"https://hacker-news.firebaseio.com/v0/item/{id}.json"
+    r = await client.get(url)
+    data = r.json
+    return data["title"]           # ← planted bug lives here
+
+async def main():
+    async with httpx.AsyncClient() as c:
+        return await fetch_title(c, 1)
+```
+
+Three tools take you from "it's broken somewhere in async" to a fix in under ten minutes: `breakpoint()`, structured logs, and reading the damn stack trace.
+
+## breakpoint() inside a coroutine
+
+```bash
+python buggy.py
+# TypeError: 'method' object is not subscriptable
+```
+
+The trace points at `data["title"]`. The fix is obvious to you now but won't be at 2am. Drop a breakpoint:
+
+```python
+async def fetch_title(client, id):
+    r = await client.get(...)
+    breakpoint()            # drops you into pdb
+    data = r.json
+    return data["title"]
+```
+
+At the prompt, type `r.json` — you see `<bound method Response.json ...>`. You forgot the parens. Fix: `data = r.json()`. Type `c` to continue, verify, exit.
+
+```bash
+(Pdb) r.json
+<bound method Response.json of <Response [200 OK]>>
+(Pdb) r.json()
+{'by': 'pg', 'id': 1, 'title': 'Y Combinator', ...}
+```
+
+`PYTHONBREAKPOINT=ipdb.set_trace` gives you a nicer prompt. `PYTHONBREAKPOINT=0` disables all breakpoints without touching code — ship with confidence.
+
+## Structured logs or nothing
+
+```bash
+uv add structlog
+```
+
+```python file=logs.py
+import structlog
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer(),
+    ],
+)
+log = structlog.get_logger()
+
+async def handle(request_id: str):
+    structlog.contextvars.bind_contextvars(request_id=request_id)
+    log.info("start")
+    await do_work()
+    log.info("done")
+
+async def do_work():
+    log.info("fetching")       # ← will still carry request_id via contextvars
+```
+
+Output is one JSON object per line:
+
+```json
+{"event": "fetching", "request_id": "abc", "level": "info", "timestamp": "2026-04-24T10:00:00Z"}
+```
+
+Parse with `jq`, grep, ship to Datadog. The `contextvars` processor is the magic: it carries bound keys across `await` boundaries so the inner `log.info("fetching")` still has `request_id=abc`.
+
+<Callout kind="break" title="Watch it break">
+```python
+import logging
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger()
+
+async def handle(request_id):
+    log = logging.LoggerAdapter(log, {"request_id": request_id})
+    log.info("start")
+    await asyncio.sleep(0)
+    log.info("done")
+
+async def inner():
+    logging.getLogger().info("fetching")  # ← no request_id! the adapter was local.
+```
+Stdlib `LoggerAdapter` is scoped to the variable, not the task. In async code this silently drops context at every await. `structlog.contextvars` fixes it because `contextvars` are per-task-copied by the asyncio event loop.
+</Callout>
+
+## Read the trace from the bottom up
+
+Python tracebacks print innermost call last. Start at the bottom — that's where the actual error is. The frames above are the call chain. Look for the deepest frame in *your* code, not a library, and breakpoint one line above.
+
+```
+File ".../httpx/_models.py", line 700, in json
+    return jsonlib.loads(self.content, **kwargs)       ← library internals, skip
+File "buggy.py", line 6, in fetch_title
+    return data["title"]                                ← your code, stop here
+TypeError: 'method' object is not subscriptable
+```
+
+## Plant a bug, find it
+
+`buggy_async.py` in this lesson has a subtle bug that only fires for one of 20 fetches. The goal: find it in under 10 minutes using breakpoints + structured logs.
+
+```python file=buggy_async.py
+# This fails for the item at index 7 in the list. Why?
+# Hint: what does the HN API return for deleted items?
+# Run: python solution.py --find-bug
+```
+
+<MasteryGate metric="bug_found_in_minutes" threshold={10} slug="01-foundations/05-debugging">
+Run the planted-bug script. When you find and fix it, enter how many minutes it took (lower is better — the gate passes at ≤ 10). If you got to 3, nice. If you got to 15, your process needs work, not your Python.
+</MasteryGate>

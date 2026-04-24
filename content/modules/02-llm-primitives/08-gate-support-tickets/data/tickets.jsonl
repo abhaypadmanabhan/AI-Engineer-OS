@@ -1,0 +1,55 @@
+{"id": 1, "text": "My credit card was charged twice for the April subscription. Please refund the duplicate.", "category": "billing"}
+{"id": 2, "text": "The export to CSV button throws a 500 error in Chrome 131.", "category": "bug"}
+{"id": 3, "text": "Please add a dark mode toggle in the settings menu.", "category": "feature"}
+{"id": 4, "text": "I cannot log in since the password-reset email never arrives.", "category": "account"}
+{"id": 5, "text": "I think someone else signed in from Russia last night — lock my account.", "category": "security"}
+{"id": 6, "text": "The dashboard takes 12 seconds to load when I filter by last 90 days.", "category": "performance"}
+{"id": 7, "text": "Does your API support webhooks for Stripe-style events?", "category": "integration"}
+{"id": 8, "text": "The docs page for /v2/users is 404ing — is there an updated link?", "category": "documentation"}
+{"id": 9, "text": "I want a prorated refund because I cancelled 3 days after renewal.", "category": "refund"}
+{"id": 10, "text": "Your API has been returning 503 for the last 20 minutes. Is there an outage?", "category": "outage"}
+{"id": 11, "text": "A user on our team is spamming other users with phishing links.", "category": "abuse"}
+{"id": 12, "text": "Random feedback — the new logo looks great.", "category": "other"}
+{"id": 13, "text": "Invoice #4821 shows $59 but my plan is $49 — fix it.", "category": "billing"}
+{"id": 14, "text": "Clicking 'Save' on the profile form throws TypeError: undefined is not a function.", "category": "bug"}
+{"id": 15, "text": "Add SSO via Okta and SAML 2.0.", "category": "feature"}
+{"id": 16, "text": "My email changed — please update a@old.com to a@new.com on my account.", "category": "account"}
+{"id": 17, "text": "2FA codes stopped arriving via SMS since I switched carriers.", "category": "security"}
+{"id": 18, "text": "Search is now taking 8s on queries that used to return in 500ms.", "category": "performance"}
+{"id": 19, "text": "How do I configure the Slack integration to post to a private channel?", "category": "integration"}
+{"id": 20, "text": "Your API reference shows `GET /orders` but the actual endpoint is `/api/v1/orders`.", "category": "documentation"}
+{"id": 21, "text": "Refund request for a double-billed transaction on 2026-03-15.", "category": "refund"}
+{"id": 22, "text": "Is the service down? status.example.com shows all green but requests fail.", "category": "outage"}
+{"id": 23, "text": "One of your customers keeps harassing me in shared workspace comments.", "category": "abuse"}
+{"id": 24, "text": "Just wanted to say hi to the team, no issue.", "category": "other"}
+{"id": 25, "text": "Can you switch me from annual to monthly billing and prorate the difference?", "category": "billing"}
+{"id": 26, "text": "Uploading a PDF larger than 5MB silently fails with no error message.", "category": "bug"}
+{"id": 27, "text": "Please add keyboard shortcut support (j/k to navigate tickets).", "category": "feature"}
+{"id": 28, "text": "My username is taken — can you delete the inactive account with that name?", "category": "account"}
+{"id": 29, "text": "I got an email saying my password was changed but I didn't do that.", "category": "security"}
+{"id": 30, "text": "Writing to the tickets table takes >2s per insert under load.", "category": "performance"}
+{"id": 31, "text": "How do I install the Zapier integration for new-ticket triggers?", "category": "integration"}
+{"id": 32, "text": "The quickstart guide still references the deprecated v1 endpoint.", "category": "documentation"}
+{"id": 33, "text": "Please refund my last month's invoice — I didn't use the service.", "category": "refund"}
+{"id": 34, "text": "us-east-1 region appears fully down since 14:00 UTC.", "category": "outage"}
+{"id": 35, "text": "User 'spammer99' is sending unsolicited DMs with crypto scam links.", "category": "abuse"}
+{"id": 36, "text": "What's your favorite book? Just curious.", "category": "other"}
+{"id": 37, "text": "I was charged for a user who left the company last quarter.", "category": "billing"}
+{"id": 38, "text": "The mobile app crashes when I tap the notifications bell.", "category": "bug"}
+{"id": 39, "text": "Feature request: let admins export all audit logs as JSON.", "category": "feature"}
+{"id": 40, "text": "I forgot which email address I used to sign up — how do I recover it?", "category": "account"}
+{"id": 41, "text": "I found a CSRF vulnerability in the /settings/api-keys endpoint.", "category": "security"}
+{"id": 42, "text": "Pagination over 10k rows returns results in 15s — can you add indexes?", "category": "performance"}
+{"id": 43, "text": "Does your product integrate with HubSpot CRM out of the box?", "category": "integration"}
+{"id": 44, "text": "The API docs for webhook signatures are missing the v2 header format.", "category": "documentation"}
+{"id": 45, "text": "Asking for a refund because we're switching to a competitor.", "category": "refund"}
+{"id": 46, "text": "All my webhooks are returning 502 — is something wrong on your side?", "category": "outage"}
+{"id": 47, "text": "A user is posting NSFW images in the public gallery — please remove.", "category": "abuse"}
+{"id": 48, "text": "Love the new onboarding flow, much cleaner than before.", "category": "other"}
+{"id": 49, "text": "My auto-renewal charged the old card — can you refund and rebill the new one?", "category": "billing"}
+{"id": 50, "text": "Filter dropdown doesn't close when you click outside it in Safari.", "category": "bug"}
+{"id": 51, "text": "Please support custom fields on ticket forms.", "category": "feature"}
+{"id": 52, "text": "I need to merge two accounts I accidentally created with different emails.", "category": "account"}
+{"id": 53, "text": "Someone brute-forced my admin account — I need the audit log for last 24h.", "category": "security"}
+{"id": 54, "text": "Page load p95 jumped from 600ms to 2.4s after yesterday's deploy.", "category": "performance"}
+{"id": 55, "text": "How do I wire up the Jira integration to sync status changes?", "category": "integration"}
