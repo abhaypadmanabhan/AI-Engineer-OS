@@ -5,7 +5,8 @@ import os
 import sys
 from pathlib import Path
 
-THRESHOLD = 0.80
+FAITHFULNESS_THRESHOLD = 0.85
+CONTEXT_PRECISION_THRESHOLD = 0.75
 
 
 def main() -> int:
@@ -76,8 +77,15 @@ def main() -> int:
 
     result = evaluate(questions, answers, contexts, ground_truths)
     print(json.dumps(result.as_dict(), indent=2))
-    print(f"faithfulness={result.faithfulness:.3f} threshold={THRESHOLD}")
-    return 0 if result.faithfulness >= THRESHOLD else 1
+    passed = (
+        result.faithfulness >= FAITHFULNESS_THRESHOLD
+        and result.context_precision >= CONTEXT_PRECISION_THRESHOLD
+    )
+    print(
+        f"faithfulness={result.faithfulness:.3f} (>= {FAITHFULNESS_THRESHOLD}) "
+        f"context_precision={result.context_precision:.3f} (>= {CONTEXT_PRECISION_THRESHOLD})"
+    )
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":
