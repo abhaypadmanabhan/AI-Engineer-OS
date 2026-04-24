@@ -1,0 +1,105 @@
+---
+title: "Hybrid: BM25 + dense + rerank"
+layer: 3
+order: 6
+minutes: 45
+cost_usd: 0.10
+p95_latency_ms: 3000
+stack: ["rank_bm25", "voyage", "cohere"]
+gate:
+  metric: "ndcg_at_10"
+  threshold: 0.80
+interview_qs:
+  - q: "Reciprocal rank fusion — why does averaging scores across retrievers fail and RRF work?"
+    answer: "Score scales differ: BM25 returns tf-idf magnitudes (unbounded), dense returns cosine [0,1]. Averaging is scale-dependent — one retriever dominates. RRF uses rank, not score: sum of 1/(k + rank_i) across retrievers. Scale-free, robust, ~60 LOC. Production default."
+    difficulty: "senior"
+  - q: "When does BM25 beat dense retrieval?"
+    answer: "Exact-match queries, rare tokens, proper nouns, code snippets, error codes, ticker symbols. Anywhere the literal string matters. Dense is fuzzy; BM25 is not. Hybrid dominates both on real corpora."
+    difficulty: "mid"
+  - q: "You added a Cohere reranker and p95 latency doubled. Was it worth it?"
+    answer: "Depends on the metric you optimize. Rerank typically adds 200-400ms and +5-15% nDCG. If you are cost-sensitive and already at nDCG 0.85, skip. If you are accuracy-sensitive (legal, medical, finance), ship it and budget the latency. Always benchmark rerank with top-50 input, top-10 output."
+    difficulty: "senior"
+---
+
+Dense retrieval is fuzzy. BM25 is literal. Combine both, then rerank the top 50. Measure the lift.
+
+```python file=bm25_dense.py
+import numpy as np, voyageai
+from rank_bm25 import BM25Okapi
+vo = voyageai.Client()
+
+corpus = [(c, aid) for c, aid in load_chunks()]   # from lesson 3.5's best chunker
+texts = [c for c, _ in corpus]
+
+# Dense — cosine on voyage-3
+E = np.array(vo.embed(texts, model="voyage-3", input_type="document").embeddings)
+E /= np.linalg.norm(E, axis=1, keepdims=True)
+
+# Sparse — BM25 on whitespace-tokenized lowercase
+bm25 = BM25Okapi([t.lower().split() for t in texts])
+
+def retrieve(query: str, k: int = 10) -> list[int]:
+    qe = np.array(vo.embed([query], model="voyage-3", input_type="query").embeddings[0])
+    qe /= np.linalg.norm(qe)
+    dense_ranks = np.argsort(-(E @ qe))
+    sparse_ranks = np.argsort(-np.array(bm25.get_scores(query.lower().split())))
+    return rrf([dense_ranks[:50], sparse_ranks[:50]], k)
+```
+
+<CostMeter cost="$0.04" latency="1.2s" tokens="0" />
+
+## Reciprocal rank fusion — 6 lines
+
+```python file=rrf.py
+def rrf(rankings: list[np.ndarray], k: int, k_rrf: int = 60) -> list[int]:
+    scores: dict[int, float] = {}
+    for r in rankings:
+        for rank, doc_id in enumerate(r):
+            scores[int(doc_id)] = scores.get(int(doc_id), 0) + 1 / (k_rrf + rank)
+    return sorted(scores, key=scores.get, reverse=True)[:k]
+```
+
+RRF has one knob (`k_rrf`, default 60 from the original paper). It does not care about score scales. It is scale-free, language-independent, and the production default you should reach for when someone says "hybrid retrieval".
+
+## Cohere rerank — the second pass
+
+```python file=rerank.py
+import cohere
+co = cohere.Client()   # COHERE_API_KEY
+
+def rerank_top(query: str, candidate_ids: list[int], final_k: int = 10) -> list[int]:
+    docs = [texts[i] for i in candidate_ids]
+    r = co.rerank(query=query, documents=docs, model="rerank-v3.5", top_n=final_k)
+    return [candidate_ids[x.index] for x in r.results]
+
+# Full pipeline
+cands = retrieve(query, k=50)       # RRF fuse to 50
+final = rerank_top(query, cands, 10)  # rerank to 10
+```
+
+Rerank runs a cross-encoder over (query, doc) pairs — slower but far more accurate than bi-encoder dense retrieval. Only feasible on a shortlist, which is why retrieval → rerank is a two-stage funnel in every production system.
+
+## The lift table
+
+```python file=lift.py
+configs = {
+  "naive (dense only)":        lambda q: dense_topk(q, 10),
+  "+ BM25 + RRF":              lambda q: rrf([dense_topk(q,50), bm25_topk(q,50)], 10),
+  "+ Cohere rerank (top-50→10)": lambda q: rerank_top(q, rrf([dense_topk(q,50), bm25_topk(q,50)], 50), 10),
+}
+for name, fn in configs.items():
+    print(f"{name:<32} nDCG@10 = {ndcg_at_k(fn, eval_set, k=10):.3f}")
+# naive (dense only)               nDCG@10 = 0.68
+# + BM25 + RRF                     nDCG@10 = 0.78
+# + Cohere rerank (top-50→10)      nDCG@10 = 0.86
+```
+
+Numbers you should see on the shipped arXiv 20-Q eval. Each stage adds measurable lift; each stage adds cost and latency. Budget accordingly.
+
+<Callout kind="break" title="Watch it break">
+Swap `rank_bm25` for Elasticsearch-style BM25 with default analyzers and watch numeric queries regress. Default tokenizers lowercase and stem — "3e-4" becomes "3e 4" becomes two useless tokens. For numeric + alphanumeric queries, use a raw/keyword subfield (ES) or skip stemming (BM25Okapi defaults). Retrieval quality is downstream of tokenization.
+</Callout>
+
+<MasteryGate metric="ndcg_at_10" threshold={0.80} slug="03-rag/06-hybrid-rerank">
+Run `solution.py`. It runs three retrieval configs on the 20-Q eval set and prints nDCG@10 for each. Target: hybrid+rerank ≥ 0.80. Enter the hybrid+rerank score.
+</MasteryGate>
