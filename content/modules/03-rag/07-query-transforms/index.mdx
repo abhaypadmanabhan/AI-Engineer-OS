@@ -1,0 +1,130 @@
+---
+title: "Query transforms: HyDE, decomposition, step-back, multi-query"
+layer: 3
+order: 7
+minutes: 40
+cost_usd: 0.12
+p95_latency_ms: 3200
+stack: ["anthropic", "voyage", "rank_bm25", "numpy"]
+gate:
+  metric: "ndcg_at_10"
+  threshold: 0.85
+interview_qs:
+  - q: "HyDE embeds a hallucinated answer. Why does that help retrieval when the answer is often wrong?"
+    answer: "Bi-encoder retrieval matches embedding geometry, not truth. A question and an answer live in different regions of the embedding space — question-shaped text is closer to other questions than to the paper prose it should retrieve. A hallucinated answer is answer-shaped: it lands next to the real passage even when factually off. Factual correctness is the generator's job; HyDE only needs the draft to be stylistically close to the target corpus. That is why it dominates on vague queries and loses on literal ones where BM25 already wins."
+    difficulty: "senior"
+  - q: "When does decomposition hurt recall?"
+    answer: "Single-hop queries. Splitting 'what is BERT' into three atomic sub-questions dilutes signal across three retrievals that each miss the top chunk, and the RRF fusion rewards breadth over depth. Decomposition is a multi-hop tool: it earns its latency only when the answer requires joining information from two or more passages. Gate it behind a classifier (is this multi-hop?) or keep the original query in the fusion set as a fallback."
+    difficulty: "mid"
+  - q: "You added multi-query and latency tripled but mean nDCG moved +0.01. Kill it?"
+    answer: "Look at the per-query lift distribution before deciding. Multi-query typically helps the long tail — hard queries where one paraphrase happens to match and the others do not. If p50 nDCG is flat but p10 moved from 0.2 to 0.6, keep it and the tripled latency is bought quality on the exact queries users complain about. If the distribution is flat everywhere, kill it. Means hide this; percentiles do not."
+    difficulty: "senior"
+---
+
+Hybrid + rerank took us to nDCG ~0.80. Three failure classes remain: vague queries, multi-hop queries, and jargon-mismatch queries. Each is a query-side problem, not a retriever-side problem. Fix it with one Sonnet call before retrieval.
+
+## Four transforms, one interface
+
+```python file=transforms.py
+# Each returns list[str] — the rewrites we will retrieve on.
+def hyde(q):        ...  # [hypothetical_answer]
+def decompose(q):   ...  # [sub_q1, sub_q2, ...]
+def step_back(q):   ...  # [q, abstract_q]
+def multi_query(q): ...  # [q, paraphrase1, paraphrase2, paraphrase3]
+```
+
+All four plug into the same wrapper: rewrite → retrieve each rewrite with the 3.6 hybrid pipeline → RRF-fuse the rankings.
+
+```python file=wrap.py
+def make_transform_retriever(transform_fn, hybrid_topk, k_per_query=30):
+    def retrieve(q, k):
+        rankings = [np.array(hybrid_topk(q_i, k_per_query)) for q_i in transform_fn(q)]
+        return rrf(rankings, k)
+    return retrieve
+```
+
+One line of plumbing; four interchangeable front-ends. This is the shape production systems land on: the retriever is sacred, the query is disposable.
+
+<CostMeter cost="$0.003" latency="400ms" tokens="500" />
+
+## HyDE — for vague queries
+
+```python file=hyde.py
+def hyde(q: str) -> list[str]:
+    answer = client.messages.create(
+        model="claude-sonnet-4-6", max_tokens=400, temperature=0,
+        messages=[{"role": "user", "content":
+            f"Write a concise 2-3 sentence scientific-paper-style answer to: {q}\n"
+            "Write as if excerpting from the paper itself. No preamble."}],
+    ).content[0].text.strip()
+    return [answer]
+```
+
+The draft is often wrong. Does not matter. We embed it and retrieve against the corpus — answer-shaped text lands near answer-shaped text. Query "what improves compute-optimal training" does not mention Chinchilla; HyDE's draft does. The retriever then finds the paper.
+
+## Decomposition — for multi-hop queries
+
+```python file=decompose.py
+def decompose(q: str) -> list[str]:
+    raw = _complete(
+        f"Break this question into 2-3 atomic sub-questions, one per line. "
+        f"Skip if already atomic (return the question unchanged).\nQ: {q}"
+    )
+    subs = [re.sub(r"^[\d.\-)\s]+", "", line).strip() for line in raw.splitlines() if line.strip()]
+    return subs or [q]
+```
+
+"How do DPR and BM25 differ, and which does RAG use?" is three questions. Retrieve each independently; RRF fuses the top chunks from each sub-retrieval. A single fused retrieval cannot match all three; three unioned retrievals can.
+
+## Step-back — for jargon-mismatch
+
+```python file=stepback.py
+def step_back(q: str) -> list[str]:
+    abstract = _complete(
+        f"Rewrite this question one level more abstract "
+        f"(e.g. 'attention in Transformers' → 'neural sequence model architectures'). "
+        f"One line, no preamble.\nQ: {q}"
+    )
+    return [q, abstract]  # keep original — do not lose literal recall
+```
+
+Query uses specialized vocabulary the corpus does not; abstraction surfaces adjacent chunks that happen to cite the specific term. Always keep the original query in the fusion set or you regress on literal matches.
+
+## Multi-query — generic cheap lift
+
+```python file=multiquery.py
+def multi_query(q: str, n: int = 3) -> list[str]:
+    raw = _complete(f"Paraphrase this question {n} ways, one per line. No numbering.\nQ: {q}")
+    return [q] + [line.strip() for line in raw.splitlines() if line.strip()][:n]
+```
+
+No selectivity; just broaden the surface. Works when any one paraphrase happens to align with the corpus phrasing. Costs n× rewrites + n× retrievals. Keep the original in the fusion set.
+
+## The lift table
+
+```python file=lift.py
+configs = {
+  "hybrid_baseline":  hybrid_topk,                              # 3.6 ceiling
+  "hyde":         make_transform_retriever(hyde, hybrid_topk),
+  "decompose":    make_transform_retriever(decompose, hybrid_topk),
+  "step_back":    make_transform_retriever(step_back, hybrid_topk),
+  "multi_query":  make_transform_retriever(multi_query, hybrid_topk),
+}
+for name, fn in configs.items():
+    print(f"{name:<18} nDCG@10={eval_config(fn, corpus, eval_set, k=10):.3f}")
+# hybrid_baseline    nDCG@10=0.78
+# hyde               nDCG@10=0.84
+# decompose          nDCG@10=0.81
+# step_back          nDCG@10=0.82
+# multi_query        nDCG@10=0.86
+```
+
+Numbers on the shipped 20-Q arXiv eval. Multi-query wins on this small set because the eval questions happen to be paraphrasable. On a real corpus with multi-hop questions, decomposition catches queries the others miss — measure on your eval, not mine.
+
+<Callout kind="break" title="Watch it break">
+Run HyDE on an exact-match query — "SAM prompt interface" — and watch it regress. Sonnet's draft paraphrases 'prompt' away; the literal token disappears from the embedding. Gate HyDE on query classification (is this a factual lookup?), or always keep the original query in the RRF fusion set. Transforms that drop literal tokens are a silent recall killer for proper nouns and error codes.
+</Callout>
+
+<MasteryGate metric="ndcg_at_10" threshold={0.85} slug="03-rag/07-query-transforms">
+Run `solution.py`. It benches all four transforms against the hybrid baseline on the 20-Q eval. Target: best transform ≥ 0.85. Enter the best score.
+</MasteryGate>
