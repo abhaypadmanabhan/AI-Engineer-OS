@@ -90,6 +90,8 @@ def semantic(text: str, size: int = 500, threshold_pct: int = 90) -> list[str]:
 
 Embeds every sentence once to find topic shifts — paid per corpus, not per query. Wins on narrative text (papers, transcripts). Loses when the cost of embedding during ingest matters more than a 3-5% recall bump.
 
+At 500 10-Ks (~Capstone M2 scale, ≈50M content tokens at voyage-3 $0.06/1M), semantic chunking costs ≈ **$6.00** to ingest vs **$3.00** for recursive — a **2× premium** for the ~5-point recall@5 lift shown above. Recursive is the right default until you measure the lift on your corpus and decide it is worth it.
+
 ## Structural — use the document's own structure
 
 ```python file=structural.py
