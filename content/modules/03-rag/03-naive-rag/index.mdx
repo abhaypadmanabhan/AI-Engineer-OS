@@ -35,7 +35,7 @@ claude = Anthropic()
 def chunk(text: str, size: int = 500) -> list[str]:
     return [text[i:i+size] for i in range(0, len(text), size)]
 
-# 2. Index — load 10 arXiv abstracts, embed all chunks
+# 2. Index — load 100 arXiv abstracts, embed all chunks
 docs = [p.read_text() for p in Path("arxiv/").glob("*.txt")]
 chunks = [(c, i) for i, d in enumerate(docs) for c in chunk(d)]
 texts = [c for c, _ in chunks]
@@ -71,7 +71,7 @@ That is RAG. No LangChain. No LlamaIndex. No vector DB. Just embeddings, cosine,
 
 ## Where it breaks — go find it
 
-Run 50 queries against your 10-paper index and hand-score relevance. You will find four failure modes within the first 20 minutes.
+Run 50 queries against your 100-paper index and hand-score relevance. You will find four failure modes within the first 20 minutes.
 
 ```text file=failures.txt
 QUERY: "What is the learning rate schedule for Chinchilla?"
