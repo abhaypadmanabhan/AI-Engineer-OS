@@ -56,9 +56,28 @@ def main() -> int:
             r = co.rerank(query=q, documents=docs, model="rerank-v3.5", top_n=k)
             return [cands[x.index] for x in r.results]
 
-        s = eval_config(hybrid_rerank, corpus, eval_set, k=10)
-        print(f"hybrid_rerank: nDCG@10={s:.3f}")
-        best = max(best, s)
+        label = "hybrid_rerank_cohere"
+    else:
+        try:
+            from sentence_transformers import CrossEncoder
+        except ImportError:
+            print("install sentence-transformers to run the free bge reranker fallback")
+            print(f"ndcg_at_10={best:.3f} threshold={THRESHOLD}")
+            return 0 if best >= THRESHOLD else 1
+        bge = CrossEncoder("BAAI/bge-reranker-v2-m3", max_length=512)
+
+        def hybrid_rerank(q, k):
+            cands = hybrid_topk(q, 50)
+            pairs = [(q, texts[i]) for i in cands]
+            scores = bge.predict(pairs)
+            order = sorted(range(len(cands)), key=lambda i: -scores[i])[:k]
+            return [cands[i] for i in order]
+
+        label = "hybrid_rerank_bge"
+
+    s = eval_config(hybrid_rerank, corpus, eval_set, k=10)
+    print(f"{label}: nDCG@10={s:.3f}")
+    best = max(best, s)
 
     print(f"ndcg_at_10={best:.3f} threshold={THRESHOLD}")
     return 0 if best >= THRESHOLD else 1

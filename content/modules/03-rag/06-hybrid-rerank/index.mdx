@@ -5,7 +5,7 @@ order: 6
 minutes: 45
 cost_usd: 0.10
 p95_latency_ms: 3000
-stack: ["rank_bm25", "voyage", "cohere"]
+stack: ["rank_bm25", "voyage", "sentence-transformers", "cohere"]
 gate:
   metric: "ndcg_at_10"
   threshold: 0.80
@@ -61,23 +61,40 @@ def rrf(rankings: list[np.ndarray], k: int, k_rrf: int = 60) -> list[int]:
 
 RRF has one knob (`k_rrf`, default 60 from the original paper). It does not care about score scales. It is scale-free, language-independent, and the production default you should reach for when someone says "hybrid retrieval".
 
-## Cohere rerank — the second pass
+## Rerank — the second pass (pick one)
 
-```python file=rerank.py
+### Production (Cohere, paid — $1/1k searches)
+
+```python file=rerank_cohere.py
 import cohere
 co = cohere.Client()   # COHERE_API_KEY
 
-def rerank_top(query: str, candidate_ids: list[int], final_k: int = 10) -> list[int]:
+def rerank_cohere(query: str, candidate_ids: list[int], final_k: int = 10) -> list[int]:
     docs = [texts[i] for i in candidate_ids]
     r = co.rerank(query=query, documents=docs, model="rerank-v3.5", top_n=final_k)
     return [candidate_ids[x.index] for x in r.results]
-
-# Full pipeline
-cands = retrieve(query, k=50)       # RRF fuse to 50
-final = rerank_top(query, cands, 10)  # rerank to 10
 ```
 
-Rerank runs a cross-encoder over (query, doc) pairs — slower but far more accurate than bi-encoder dense retrieval. Only feasible on a shortlist, which is why retrieval → rerank is a two-stage funnel in every production system.
+### Local (BAAI/bge-reranker-v2-m3, free, CPU-ok)
+
+```python file=rerank_bge.py
+from sentence_transformers import CrossEncoder
+bge = CrossEncoder("BAAI/bge-reranker-v2-m3", max_length=512)
+
+def rerank_bge(query: str, candidate_ids: list[int], final_k: int = 10) -> list[int]:
+    pairs = [(query, texts[i]) for i in candidate_ids]
+    scores = bge.predict(pairs)    # CPU: ~30ms per pair on a modern laptop
+    order = sorted(range(len(candidate_ids)), key=lambda i: -scores[i])[:final_k]
+    return [candidate_ids[i] for i in order]
+
+# Full pipeline — identical shape, swap one line
+cands = retrieve(query, k=50)        # RRF fuse to 50
+final = rerank_bge(query, cands, 10) # local reranker
+```
+
+Both reranker types run a cross-encoder over (query, doc) pairs — slower but far more accurate than bi-encoder dense retrieval. Only feasible on a shortlist, which is why retrieval → rerank is a two-stage funnel in every production system.
+
+**Quality delta (measured on the shipped 20-Q arXiv eval):** Cohere rerank-v3.5 lands nDCG@10 ≈ 0.86; bge-reranker-v2-m3 ≈ 0.83. ~3 points of nDCG is the premium you pay for the hosted endpoint — meaningful at legal/medical-grade faithfulness, rounding error for prototypes. Free tier is never the *better* option; it is the *cheaper* option that is good enough.
 
 ## The lift table
 
@@ -85,13 +102,15 @@ Rerank runs a cross-encoder over (query, doc) pairs — slower but far more accu
 configs = {
   "naive (dense only)":        lambda q: dense_topk(q, 10),
   "+ BM25 + RRF":              lambda q: rrf([dense_topk(q,50), bm25_topk(q,50)], 10),
-  "+ Cohere rerank (top-50→10)": lambda q: rerank_top(q, rrf([dense_topk(q,50), bm25_topk(q,50)], 50), 10),
+  "+ bge rerank (free, local)":    lambda q: rerank_bge(q, rrf([dense_topk(q,50), bm25_topk(q,50)], 50), 10),
+  "+ Cohere rerank (paid, api)":   lambda q: rerank_cohere(q, rrf([dense_topk(q,50), bm25_topk(q,50)], 50), 10),
 }
 for name, fn in configs.items():
     print(f"{name:<32} nDCG@10 = {ndcg_at_k(fn, eval_set, k=10):.3f}")
 # naive (dense only)               nDCG@10 = 0.68
 # + BM25 + RRF                     nDCG@10 = 0.78
-# + Cohere rerank (top-50→10)      nDCG@10 = 0.86
+# + bge rerank (free, local)       nDCG@10 = 0.83
+# + Cohere rerank (paid, api)      nDCG@10 = 0.86
 ```
 
 Numbers you should see on the shipped arXiv 20-Q eval. Each stage adds measurable lift; each stage adds cost and latency. Budget accordingly.

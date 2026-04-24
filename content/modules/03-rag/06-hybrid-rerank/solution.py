@@ -76,21 +76,32 @@ def main() -> None:
     def hybrid_topk(q: str, k: int) -> list[int]:
         return rrf([np.array(dense_topk(q, 50)), np.array(bm25_topk(q, 50))], k)
 
-    def hybrid_rerank_topk(q: str, k: int) -> list[int]:
+    def hybrid_rerank_cohere(q: str, k: int) -> list[int]:
         cands = hybrid_topk(q, 50)
-        if not os.environ.get("COHERE_API_KEY"):
-            return cands[:k]
         import cohere
         co = cohere.Client()
         docs = [texts[i] for i in cands]
         r = co.rerank(query=q, documents=docs, model="rerank-v3.5", top_n=k)
         return [cands[x.index] for x in r.results]
 
+    def hybrid_rerank_bge(q: str, k: int, _cache: dict = {}) -> list[int]:
+        cands = hybrid_topk(q, 50)
+        if "m" not in _cache:
+            from sentence_transformers import CrossEncoder
+            _cache["m"] = CrossEncoder("BAAI/bge-reranker-v2-m3", max_length=512)
+        m = _cache["m"]
+        pairs = [(q, texts[i]) for i in cands]
+        scores = m.predict(pairs)
+        order = sorted(range(len(cands)), key=lambda i: -scores[i])[:k]
+        return [cands[i] for i in order]
+
     configs = {
         "dense_only": dense_topk,
         "hybrid_rrf": hybrid_topk,
-        "hybrid_rerank": hybrid_rerank_topk,
+        "hybrid_rerank_bge": hybrid_rerank_bge,
     }
+    if os.environ.get("COHERE_API_KEY"):
+        configs["hybrid_rerank_cohere"] = hybrid_rerank_cohere
     best = 0.0
     for name, fn in configs.items():
         score = eval_config(fn, corpus, eval_set, k=10)
