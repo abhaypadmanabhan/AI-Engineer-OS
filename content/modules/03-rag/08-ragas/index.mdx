@@ -1,0 +1,133 @@
+---
+title: "Ragas: faithfulness, relevance, context precision & recall"
+layer: 3
+order: 8
+minutes: 45
+cost_usd: 0.35
+p95_latency_ms: null
+stack: ["anthropic", "voyage", "numpy"]
+gate:
+  metric: "faithfulness"
+  threshold: 0.80
+interview_qs:
+  - q: "Faithfulness is 1.0 but users complain answers are wrong. Which metric catches this and why?"
+    answer: "Answer relevance. Faithfulness only asks 'is every claim in the answer supported by the retrieved context' — a generator that picks one true sentence from the context and returns it will score 1.0 even if the sentence does not address the question. Answer relevance reverse-engineers: given the answer, what questions could it be answering? If the embedding similarity between those and the real question is low, the answer is grounded but off-topic. You need faithfulness AND answer relevance — either alone is gameable."
+    difficulty: "senior"
+  - q: "Why use an LLM judge for faithfulness instead of BLEU or ROUGE?"
+    answer: "Lexical overlap metrics fail on paraphrase. The retrieved chunk may say 'scaling equally with compute' while the answer says 'model size and tokens doubled together' — same fact, near-zero BLEU. Faithfulness is a semantic entailment question, not a string-match question. LLM judges handle paraphrase, coreference, and implication natively. The tradeoff is cost and judge-bias, which you manage by sampling and cross-model judging."
+    difficulty: "mid"
+  - q: "Your generator is Sonnet and your Ragas judge is also Sonnet. What bias shows up, and how do you measure it?"
+    answer: "Self-preference bias: judges rate their own model's outputs higher than equivalent outputs from other models. You measure it by re-running the same eval with a different judge (GPT-5 or Haiku) and comparing per-example scores; a systematic positive gap on Sonnet answers vs the cross-judge is the bias. Mitigations: use a different family as judge, use multi-judge majority, or pin a weaker but cheaper judge (Haiku) and track judge-drift when you upgrade it. Never ship Ragas numbers without naming the judge."
+    difficulty: "senior"
+---
+
+Retrieval nDCG is not enough. A RAG pipeline can retrieve the right chunks and still answer the wrong question, or answer it from thin air. Ragas is four LLM-judged metrics that catch different failure modes. We implement all four from raw SDK so there is no library to upgrade across.
+
+## The four metrics
+
+| Metric | Asks | Catches |
+|---|---|---|
+| Faithfulness | Are answer claims supported by context? | Hallucination |
+| Answer relevance | Does the answer address the question? | Off-topic answers |
+| Context precision | Are retrieved chunks relevant, in rank order? | Poor retrieval ranking |
+| Context recall | Do the chunks contain the ground-truth info? | Missing retrieval |
+
+## Faithfulness — claim extraction + entailment
+
+```python file=faithfulness.py
+def _faithfulness_one(answer, context, model):
+    claims = _extract_claims(answer, model)           # Sonnet splits answer into atomic claims
+    if not claims: return 1.0
+    ctx = "\n\n".join(context)
+    supported = sum(
+        1 for c in claims
+        if _judge(ENTAIL_PROMPT.format(context=ctx, claim=c), model, 10).lower().startswith("yes")
+    )
+    return supported / len(claims)
+```
+
+Two Sonnet calls per example: one to split, then one per claim to entail. This is why Ragas is expensive — the judge dominates cost. Budget ~$0.01 per example with Sonnet.
+
+## Answer relevance — reverse-engineer the question
+
+```python file=relevance.py
+def _answer_relevance_one(question, answer, model, n=3):
+    reversed_qs = _judge(f"Given the ANSWER, generate {n} questions it could be answering...", ...)
+    emb = _embed([question] + reversed_qs)
+    return float((emb[0] @ emb[1:].T).mean())   # cosine similarity
+```
+
+If the answer is "Paris is the capital of France" and the question was "what scaling law governs training", the reverse-generated questions will be about geography, and cosine similarity to the real question will be near zero. This is the only metric that catches grounded-but-off-topic answers.
+
+## Context precision — MAP over LLM-judged relevance
+
+```python file=precision.py
+def _context_precision_one(question, context, model):
+    rel = [1 if _judge(CTX_REL_PROMPT.format(question=question, ctx=c), model, 10)
+                  .lower().startswith("yes") else 0
+           for c in context]
+    total = sum(rel)
+    if total == 0: return 0.0
+    return sum(sum(rel[:k+1]) / (k+1) for k in range(len(rel)) if rel[k]) / total
+```
+
+Weighted precision@k in rank order — the definition used by the `ragas` library. A retriever that puts the one relevant chunk at rank 1 scores 1.0; at rank 10, scores 0.1. Rewards rank quality, not just recall.
+
+## Context recall — ground-truth decomposition
+
+```python file=recall.py
+def _context_recall_one(ground_truth, context, model):
+    gt_claims = _extract_claims_from_gt(ground_truth, model)
+    if not gt_claims: return 1.0
+    ctx = "\n\n".join(context)
+    supported = sum(
+        1 for c in gt_claims
+        if _judge(ENTAIL_PROMPT.format(context=ctx, claim=c), model, 10).lower().startswith("yes")
+    )
+    return supported / len(gt_claims)
+```
+
+The only metric that needs hand-written ground truth. We ship 20 one-paragraph ground-truth answers in `data/ground_truth_answers.json`, keyed to the arXiv eval set.
+
+## The public entry point
+
+```python file=api.py
+@dataclass
+class RagasResult:
+    faithfulness: float
+    answer_relevance: float
+    context_precision: float
+    context_recall: float
+
+def evaluate(
+    questions: list[str],
+    answers: list[str],
+    contexts: list[list[str]],
+    ground_truths: list[str],
+    judge_model: str = "claude-sonnet-4-6",
+) -> RagasResult: ...
+```
+
+This signature is the one 3.10 and Capstone M2 import verbatim. No renames, no adapter. Design once, reuse three times.
+
+<CostMeter cost="$0.35" latency="90s" tokens="45k" />
+
+## Why one number is not enough
+
+```python file=gotcha.py
+q   = "What scaling law governs compute-optimal LLM training?"
+ctx = ["Chinchilla: model size and training tokens should scale equally with compute..."]
+a_off = "Chinchilla was trained on MassiveText. It uses rotary positional embeddings."
+# Every claim is in the context. Faithfulness = 1.0.
+# The answer does not mention scaling laws. Answer relevance ≈ 0.3.
+```
+
+Faithfulness = 1.0, answer relevance = 0.3. The system is grounded and useless. You ship only when both are above threshold.
+
+<Callout kind="break" title="Watch it break">
+Use the same model as generator and judge. Self-preference bias: Sonnet judging Sonnet answers rates them ~0.05 higher than Haiku or GPT-5 judging the same outputs. Safe rule: pick a judge from a different model family, or if you must use the same family, pin a smaller model (Haiku) so the judge cannot share the generator's specific failure modes. Never publish Ragas numbers without naming the judge.
+</Callout>
+
+<MasteryGate metric="faithfulness" threshold={0.80} slug="03-rag/08-ragas">
+Run `eval.py`. It runs hybrid+HyDE retrieval + Sonnet generation on the 20-Q arXiv set, then evaluates with this harness. Target: faithfulness ≥ 0.80. Enter the faithfulness score.
+</MasteryGate>
