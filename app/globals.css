@@ -3,25 +3,102 @@
 @tailwind utilities;
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: 24 24 27;
+  --foreground: 244 244 245;
+  --muted: 39 39 42;
+  --muted-foreground: 161 161 170;
+  --border: 39 39 42;
+  --card: 30 30 33;
+  --accent: 251 146 60;
+  --accent-foreground: 24 24 27;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html,
 body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  background: rgb(var(--background));
+  color: rgb(var(--foreground));
+  font-family: var(--font-plex), ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: "ss01", "cv02", "cv11";
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-fraunces), ui-serif, Georgia, serif;
+  font-optical-sizing: auto;
+  letter-spacing: -0.01em;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875em;
+}
+
+.prose-lesson {
+  max-width: 720px;
+  line-height: 1.7;
+}
+.prose-lesson h1 {
+  font-size: 2.25rem;
+  font-weight: 600;
+  margin: 0 0 1rem;
+}
+.prose-lesson h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 2.25rem 0 0.75rem;
+}
+.prose-lesson h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin: 1.75rem 0 0.5rem;
+}
+.prose-lesson p {
+  margin: 0.9rem 0;
+}
+.prose-lesson ul,
+.prose-lesson ol {
+  margin: 0.9rem 0;
+  padding-left: 1.25rem;
+}
+.prose-lesson li {
+  margin: 0.3rem 0;
+}
+.prose-lesson a {
+  color: rgb(var(--accent));
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.prose-lesson :where(code):not(pre code) {
+  background: rgb(var(--muted));
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+.prose-lesson pre {
+  background: transparent;
+  padding: 0;
+  margin: 0;
+}
+
+.shiki,
+.shiki span {
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 @layer utilities {
   .text-balance {
     text-wrap: balance;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgb(var(--border));
+    border-radius: 3px;
   }
 }

@@ -1,36 +1,66 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AI Engineer OS
 
-## Getting Started
+Interactive learning platform that takes a rusty Python developer to a hireable AI engineer in 60–90 days. Code-first, failure-driven, job-coupled.
 
-First, run the development server:
+## What this is
+
+- **7-layer curriculum** (Setup → Foundations → LLM primitives → RAG → Agents + MCP → Production → Advanced → Top 0.1%)
+- **One capstone:** **FilingSage** — multi-agent RAG over SEC filings, deployed end-to-end
+- **Each lesson:** runnable lab, cost + latency tag, numeric mastery gate, 3 interview Qs
+
+Not a tutorial site. A production-grade web app whose content *is* the curriculum.
+
+## Quickstart (≤5 minutes)
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone <this-repo> && cd ai-engineer-os
+npm install
+npm run dev          # http://localhost:3000 (or 3001 if occupied)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Visit `/learn/00-setup/01-toolchain` to see a rendered lesson.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Repo layout
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+app/                 Next.js App Router
+  learn/[...slug]/   dynamic lesson renderer (MDX)
+  capstone/          FilingSage overview page
+components/          CodeBlock, MasteryGate, CostMeter, Sidebar, ProgressBar, DiagramMermaid, InterviewCard, Callout
+content/modules/     MDX lessons. One folder per lesson.
+  <LL>-<slug>/<NN>-<slug>/
+    index.mdx        the lesson
+    lab.ipynb        Colab-ready notebook (added per layer)
+    solution.py      reference solution
+    eval.py          local auto-grader
+lib/                 content loader, shiki, schema (zod), colab URL helper
+capstone/filingsage/ the capstone repo (added after L5)
+SPEC.md              full curriculum index + mastery rubrics
+CLAUDE.md            pedagogy conventions for future contributors / AI agents
+```
 
-## Learn More
+## Writing lessons
 
-To learn more about Next.js, take a look at the following resources:
+See `CLAUDE.md` for conventions. Minimum contract:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- Code block within the first 3 sentences
+- ≥40% of the body is code
+- ≤800 words of prose
+- Ends with a `<MasteryGate metric="..." threshold={...} />` and exactly 3 interview Qs in frontmatter
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Frontmatter is zod-validated (`lib/schema.ts`). Bad frontmatter → the lesson is skipped at build time with a console warning.
 
-## Deploy on Vercel
+## Deploy
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+vercel deploy --prod
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Set `NEXT_PUBLIC_GH_USER` / `NEXT_PUBLIC_GH_REPO` / `NEXT_PUBLIC_GH_BRANCH` so the "Open in Colab" buttons point to your fork.
+
+## Status
+
+- [x] Phase 1 — scaffold + components + MDX pipeline
+- [x] Phase 2 — curriculum content (L0 complete, L1/L2/L3 started)
+- [ ] Phase 3 — FilingSage capstone
+- [ ] Phase 4 — Vercel deploy + Lighthouse ≥95
