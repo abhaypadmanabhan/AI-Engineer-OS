@@ -1,0 +1,24 @@
+{"title": "Attention Is All You Need", "category": "cs.CL", "arxiv_id": "1706.03762"}
+{"title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding", "category": "cs.CL", "arxiv_id": "1810.04805"}
+{"title": "Language Models are Few-Shot Learners", "category": "cs.CL", "arxiv_id": "2005.14165"}
+{"title": "Chain-of-Thought Prompting Elicits Reasoning in Large Language Models", "category": "cs.CL", "arxiv_id": "2201.11903"}
+{"title": "Training Compute-Optimal Large Language Models", "category": "cs.CL", "arxiv_id": "2203.15556"}
+{"title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks", "category": "cs.CL", "arxiv_id": "2005.11401"}
+{"title": "REALM: Retrieval-Augmented Language Model Pre-Training", "category": "cs.CL", "arxiv_id": "2002.08909"}
+{"title": "Dense Passage Retrieval for Open-Domain Question Answering", "category": "cs.CL", "arxiv_id": "2004.04906"}
+{"title": "Deep Residual Learning for Image Recognition", "category": "cs.CV", "arxiv_id": "1512.03385"}
+{"title": "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale", "category": "cs.CV", "arxiv_id": "2010.11929"}
+{"title": "High-Resolution Image Synthesis with Latent Diffusion Models", "category": "cs.CV", "arxiv_id": "2112.10752"}
+{"title": "Denoising Diffusion Probabilistic Models", "category": "cs.CV", "arxiv_id": "2006.11239"}
+{"title": "Masked Autoencoders Are Scalable Vision Learners", "category": "cs.CV", "arxiv_id": "2111.06377"}
+{"title": "CLIP: Learning Transferable Visual Models From Natural Language Supervision", "category": "cs.CV", "arxiv_id": "2103.00020"}
+{"title": "Segment Anything", "category": "cs.CV", "arxiv_id": "2304.02643"}
+{"title": "YOLOv7: Trainable bag-of-freebies sets new state-of-the-art for real-time object detectors", "category": "cs.CV", "arxiv_id": "2207.02696"}
+{"title": "A Simple Framework for Contrastive Learning of Visual Representations", "category": "cs.LG", "arxiv_id": "2002.05709"}
+{"title": "Adam: A Method for Stochastic Optimization", "category": "cs.LG", "arxiv_id": "1412.6980"}
+{"title": "Batch Normalization: Accelerating Deep Network Training by Reducing Internal Covariate Shift", "category": "cs.LG", "arxiv_id": "1502.03167"}
+{"title": "Dropout: A Simple Way to Prevent Neural Networks from Overfitting", "category": "cs.LG", "arxiv_id": "1207.0580"}
+{"title": "Generative Adversarial Networks", "category": "cs.LG", "arxiv_id": "1406.2661"}
+{"title": "Auto-Encoding Variational Bayes", "category": "cs.LG", "arxiv_id": "1312.6114"}
+{"title": "Decoupled Weight Decay Regularization", "category": "cs.LG", "arxiv_id": "1711.05101"}
+{"title": "Mixup: Beyond Empirical Risk Minimization", "category": "cs.LG", "arxiv_id": "1710.09412"}
