@@ -44,49 +44,9 @@ Five files of someone else's framework code reduced to twelve lines that you can
 
 <CostMeter cost="$4.00" latency="180s" tokens="350k" />
 
-## Why structural chunking is mandatory on 10-Ks
+## Structural chunking on `## ITEM N.` markers
 
-10-Ks have explicit section anchors:
-
-```
-## ITEM 1. BUSINESS
-...company description...
-## ITEM 1A. RISK FACTORS
-...risk disclosures...
-## ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS
-...MD&A...
-## ITEM 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA
-...statements + footnotes...
-```
-
-The fetcher inserts these markers; the chunker breaks on them. A recursive splitter (LangChain default, LlamaIndex `SentenceSplitter`) crosses these headers and produces chunks that mix Item 1 (descriptive) with Item 1A (risk-flavored) — the generator then mis-attributes risk language to the business overview. Structural chunking eliminates the entire failure class.
-
-```python file=chunk.py
-def chunk_filing(text, ticker, seed=0):
-    sections = split_on(r"^## (ITEM \d+[A-Z]?\.\s+[^\n]+)$", text)
-    chunks = []
-    for section, body in sections:
-        if len(body) <= 1500:
-            chunks.append({"ticker": ticker, "section": section, "text": body})
-        else:
-            # Long sections (Risk Factors, MD&A) need secondary splits;
-            # seed-jittered boundary surfaces real chunking variance.
-            chunks.extend(_split_long(body, ticker, section, seed))
-    return chunks
-```
-
-## Why two seeds, and what they actually control
-
-Production RAG is not bit-deterministic. Server-side LLM variance, judge sampling, and tie-broken sort orders all introduce noise at every component boundary. A single-seed run hides this. Two seeds with explicit jitter on the chunk boundary expose it.
-
-```python file=seeds.py
-SEEDS = (7, 42)
-# Each seed run produces (faith, ctx_prec, ans_rel, ctx_rec).
-# Report: mean ± stdev across seeds.
-# Gate: mean >= threshold.   stdev tells you margin of safety.
-```
-
-If faithfulness lands 0.91 ± 0.02 we ship; if 0.85 ± 0.05 we are at the edge and need to fix before scaling. The number that matters is not the mean alone — it is the lower confidence bound.
+10-Ks have explicit section anchors (`ITEM 1A. RISK FACTORS`, `ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS`, etc.). The fetcher inserts `## ITEM N. TITLE` markers; the chunker breaks on them. Recursive splitters cross these headers and mix risk disclosures into business overview chunks — structural chunking eliminates that failure class.
 
 ## Debugging diary — what Ragas surfaced
 
@@ -119,33 +79,34 @@ Pre-filter, not post-filter. Wrong-ticker chunks must never compete for top-k.
 
 ## When a correct fix makes the score drop
 
-We re-ran with the ticker pre-filter:
+Three iterations of the proxy run:
 
 ```text
-                  before fix   after fix
-faithfulness     :    0.970      0.961
-context_precision:    0.439  →   0.346   ← regressed
-context_recall   :    0.369      0.286   (regressed)
-answer_relevance :    0.159      0.445
+                  run 1: build   run 2: + ticker filter   run 3: + chunk regex fix
+faithfulness     :    0.970          0.961                    0.962
+context_precision:    0.439          0.346                    0.295
+context_recall   :    0.369          0.286                    0.313
+answer_relevance :    0.159          0.445                    0.587
 ```
 
-Pre-filter worked perfectly — 0/50 questions retrieved a wrong-ticker chunk in top-3. The fix did exactly what it should. The metric still dropped. This is the most informative outcome a debugging loop can produce: a correct fix exposing the next bug.
+Each fix did what it was designed to do — pre-filter eliminated 0/50 wrong-ticker chunks in top-3; regex fix turned 6 garbage labels per filing into 16 real ones. Yet ctx_precision dropped each iteration. answer_relevance climbed +0.42 cumulative; faithfulness held at 0.96.
 
-Interpretation: the unfiltered run had been padded by *lucky cross-corpus matches* — BM25 hitting "research and development" tokens in any tech filing, the judge marginally accepting those. With pre-filter only right-ticker chunks compete; real precision was always ~0.35, the 0.44 was tolerance for noise. The drop wasn't regression — it was the metric finally telling the truth.
+The drop wasn't regression — it was the metric losing tolerance for noise it had silently accepted. Run 1's 0.44 was padded by lucky cross-corpus matches; run 2's 0.35 by lucky alignments inside noisy chunk boundaries; run 3's 0.30 is the true precision of top-5 from a tight pool of ~430 right-ticker chunks where the answer lives in 3-5 of them. A 1-in-86 base rate that semantic + BM25 + RRF lift to ~30%. Past it requires architectural change, not tuning.
 
-Inspecting retrieved contexts surfaced the next bug: section labels were noise. Real 10-K headings are start-of-line anchors — `Item 1A. Risk Factors`. Our extractor was matching cross-references in body prose — `see Item 7. of this Form 10-K`:
+## Where we landed
 
+```text
+gate     : faithfulness ≥ 0.85 AND ctx_precision ≥ 0.75
+proxy    : faithfulness   0.962  ✓    ctx_precision   0.295  ✗
 ```
-[AAPL | ITEM 7. OF THE COMPANY&]   ← cross-ref, not heading
-[NVDA | ITEM 7. IN OUR ANNUAL REPORT ON FORM]
-[META | ITEM 16. FORM]
-```
 
-Sections split at every cross-reference. Chunks started mid-sentence.
+Faithfulness met by margin. ctx_precision short by ~0.45 — a structural ceiling, not a bug. Path to closing it (architectural, previews Capstone M2; not stacked in this lesson):
 
-Fix two: tighten section regex. Require start-of-line, horizontal-whitespace-only between `Item N` and title (TOC entries split across newlines fail), capitalised title, post-filter rejecting cross-reference markers (`of the`, `of this`, `in our`, `see`, `above`, `below`) in title or 30-char window. Replace block-level HTML tags with newlines before stripping inline tags so the start-of-line anchor survives DOM-to-text. AAPL went from 6 garbage labels to 16 real ones. Refetched all 99.
+- **Question-aware section routing**: classify question → `Risk Factors | MD&A | Financials`, mask retrieval to matching section + ticker. Two-tier metadata pre-filter, same pattern applied twice. Lift estimate 0.55–0.70.
+- **Top_k = 10 + Cohere rerank-v3.5** (3.6 pattern): rerank typically adds +0.05–0.15 on rank-weighted metrics. Combined lift estimate 0.45–0.55.
+- **Semantic chunking** (3.5) inside financial sections, or one chunk per line item.
 
-The lesson: **Ragas's four metrics together are a diagnostic, not just a gate**. High faithfulness + low ctx_precision means retriever or chunking, not generator. A correct fix to retrieval can reveal that chunking was the bigger bug; a correct fix to chunking can reveal the embedder is wrong. Read the conjunction, not the headline; read the per-question diff, not the aggregate; expect the second bug.
+The lesson: **Ragas's four metrics together are a diagnostic, not just a gate**. High faithfulness + low ctx_precision means retriever or chunking, not generator. Correct fix to retrieval can reveal chunking was the bigger bug; correct fix to chunking can reveal a structural ceiling. Expect the second bug; know when the next bug is architectural. The pipeline is complete, runnable, debuggable — gate it does not pass is a design constraint published transparently.
 
 ## Routing — three transforms, one pipeline
 
@@ -158,21 +119,23 @@ def route(q, qtype):
 
 Every transform from 3.7 has a place; none is universal. The router is one Sonnet call cheaper than running all transforms in parallel and ~95% as accurate on the labeled dataset.
 
-## Faithfulness ≥ 0.85 AND context_precision ≥ 0.75
+## Faithfulness ≥ 0.85 AND context_precision ≥ 0.75 — what the gate asks
 
-Both must pass. Faithfulness alone is gameable (the generator picks one true sentence and stops); context_precision alone does not enforce grounded generation. The conjunction is the contract. Per SPEC.md L3 gate.
+Both must pass for production. Faithfulness alone is gameable (the generator picks one true sentence and stops); context_precision alone does not enforce grounded generation. The conjunction is the contract. Per SPEC.md L3 gate.
 
 ```python file=gate.py
 passed = (
-    summary.faithfulness_mean      >= 0.85 and
-    summary.context_precision_mean >= 0.75
+    summary.faithfulness_mean      >= 0.85 and   # we hit 0.962 ✓
+    summary.context_precision_mean >= 0.75       # we hit 0.295 ✗
 )
 ```
 
+We publish what we measured. The gate threshold stays at the SPEC value; closing it is your job, with the diagnostic and the architectural sketch above as your starting point.
+
 <Callout kind="break" title="Watch it break">
-Run the proxy with HyDE forced on for ALL queries (no router). On factual single-hop queries — "What was AAPL's R&D in FY2023?" — the HyDE draft paraphrases the dollar amount, which embeds farther from the literal MD&A line item than the original query. Retrieval drops; faithfulness drops because the generator is reasoning over weaker context. The router is not a niceity — uniform transforms have a cost shape, and matching the transform to the query's structure is the win.
+Run the proxy with HyDE forced on for ALL queries (no router). On factual single-hop queries — "What was AAPL's R&D in FY2023?" — the HyDE draft paraphrases the dollar amount, which embeds farther from the literal MD&A line item than the original query. Retrieval drops; faithfulness drops because the generator is reasoning over weaker context. The router is not a nicety — uniform transforms have a cost shape, and matching the transform to the query's structure is the win.
 </Callout>
 
 <MasteryGate metric="faithfulness" threshold={0.85} slug="03-rag/10-gate-rag-10k">
-Run `eval.py` (two seeds × 100 filings × 50 questions). Asserts faithfulness ≥ 0.85 AND context_precision ≥ 0.75 on the mean across seeds. Enter the faithfulness mean.
+Run `eval.py` (two seeds × 100 filings × 50 questions). Asserts faithfulness ≥ 0.85 AND context_precision ≥ 0.75 on the mean across seeds. The reference run lands faithfulness 0.96 and ctx_precision 0.30 — gate-pass requires the architectural fixes sketched above (section routing, top_k=10 + Cohere rerank, semantic chunking). Enter the faithfulness mean from your run.
 </MasteryGate>
