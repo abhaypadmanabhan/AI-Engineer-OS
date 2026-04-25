@@ -131,6 +131,22 @@ Running all four metrics with a Sonnet judge costs ~$0.02 per example. At 500 qu
 Use the same model as generator and judge. Self-preference bias: Sonnet judging Sonnet answers rates them ~0.05 higher than Haiku or GPT-5 judging the same outputs. Safe rule: pick a judge from a different model family, or if you must use the same family, pin a smaller model (Haiku) so the judge cannot share the generator's specific failure modes. Never publish Ragas numbers without naming the judge.
 </Callout>
 
+<Callout kind="warning" title="Silent partial sets — the metric you trust may be a lie">
+Ragas's `df.dropna().mean()` silently drops failed judge calls. If your judge LLM hits a credit limit, rate limit, or 5xx error mid-eval, the reported score is computed over a *partial* set — with no warning, no asterisk, no log line elevating the issue. We hit this on the 3.10 proxy: the Anthropic balance ran out at judgment 184 of 200; the printed score was real, the denominator wasn't.
+
+Production eval hygiene: log judge call success rate alongside every metric. If success rate is below 100%, the metric is suspect — either re-run the failed examples or refuse to publish the number. A reported 0.91 over 184/200 successful judgments is not a 0.91 over the full suite; the missing 16 are not random.
+
+```python file=judge_call_audit.py
+result = ragas_evaluate(dataset, metrics=[…], llm=llm, embeddings=emb)
+df = result.to_pandas()
+for m in [Faithfulness(), ResponseRelevancy(), …]:
+    success = df[m.name].notna().sum()
+    print(f"{m.name}: {df[m.name].mean():.3f}  ({success}/{len(df)} judgments)")
+```
+
+If you cannot show the success-rate column, you cannot show the metric.
+</Callout>
+
 <MasteryGate metric="faithfulness" threshold={0.85} slug="03-rag/08-ragas">
 Run `eval.py`. Hybrid+HyDE retrieval + Sonnet generation on the 20-Q arXiv set, scored with the shipped ragas harness. Target: faithfulness ≥ 0.85 AND context_precision ≥ 0.75. Enter the faithfulness score.
 </MasteryGate>
