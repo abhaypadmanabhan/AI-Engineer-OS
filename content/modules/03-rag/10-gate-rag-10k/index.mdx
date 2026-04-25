@@ -5,7 +5,7 @@ order: 10
 minutes: 60
 cost_usd: 4.00
 p95_latency_ms: 4500
-stack: ["anthropic", "cohere", "rank_bm25", "sentence-transformers", "cohere", "ragas"]
+stack: ["anthropic", "cohere", "rank_bm25", "sentence-transformers", "ragas"]
 gate:
   metric: "faithfulness"
   threshold: 0.85
@@ -87,6 +87,42 @@ SEEDS = (7, 42)
 ```
 
 If faithfulness lands 0.91 ± 0.02 we ship; if 0.85 ± 0.05 we are at the edge and need to fix before scaling. The number that matters is not the mean alone — it is the lower confidence bound.
+
+## The retrieval miss we hit and how Ragas surfaced it
+
+First proxy run: faithfulness landed at **0.97**, well past the 0.85 bar. Context_precision landed at **0.44** — half the threshold. The lesson is what those two numbers, side by side, tell you.
+
+A high faithfulness with a collapsing context_precision is a specific failure shape: *the generator is being honest about a lousy context*. When the retrieved chunks are wrong, the system politely says "Not in the provided context" or summarizes what it has — both of which Ragas marks as faithful, because every claim is in the context. Faithfulness measures whether the model lied; it does not measure whether the model had anything useful to lie about.
+
+Context_precision is the metric that catches retrieval misses. It asks: in the top-k chunks I fetched, ranked by my retriever, how many are actually relevant to the question? At 0.44, less than half of the rank-weighted chunks were judged relevant. Faithfulness was healthy, retrieval was not.
+
+```text
+faithfulness     : 0.970   ← pipeline is grounded
+context_precision: 0.439   ← retrieval is wrong
+answer_relevance : 0.159   ← answers are off-topic (downstream of bad context)
+context_recall   : 0.369   ← ground-truth info absent from context
+```
+
+Diagnosis took ten minutes. Three suspects ranked: (1) judge harshness — ruled out, faithfulness 0.97 means judge is calibrated; (2) chunking destroyed structure — ruled out, structural splits work and `seed_7.json` shows correct sections; (3) **retriever fetching wrong-ticker chunks** — confirmed, the `expected_tickers` field in `eval_questions.json` was carried through the eval set but never reached the retrieval call. "Apple FY2023 R&D" was matching `research and development` token co-occurrences across 99 filings; ~half the top-5 came from the wrong company.
+
+The fix is a metadata pre-filter — ten lines of code, the single most common production RAG fix. Lesson 3.6 covers the pattern in detail. Here is what it looks like wired into our hybrid retriever:
+
+```python file=prefilter.py
+def hybrid_topk(idx, q, k, allowed_tickers=None):
+    mask = (np.array([c["ticker"] in allowed_tickers for c in idx["chunks"]])
+            if allowed_tickers else None)
+    dense_scores = idx["E"] @ qe
+    bm25_scores  = np.array(idx["bm25"].get_scores(q.lower().split()))
+    if mask is not None:
+        dense_scores = np.where(mask, dense_scores, -np.inf)
+        bm25_scores  = np.where(mask, bm25_scores,  -np.inf)
+    return rrf([np.argsort(-dense_scores)[:50],
+                np.argsort(-bm25_scores)[:50]], k)
+```
+
+Pre-filter, not post-filter. Wrong-ticker chunks must never compete for top-k. `np.where(mask, scores, -np.inf)` is the cheap correct way: ineligible chunks are guaranteed to fall out of `argsort` regardless of how strong their text-similarity score happens to be.
+
+The lesson is not "we hit a bug and fixed it." The lesson is that **Ragas's four metrics together form a diagnostic, not just a gate**: high faithfulness + low context_precision means retriever, not generator. Low faithfulness + high context_precision means generator, not retriever. Low both means chunking. The metric set is a triage tool. Read the conjunction, not the headline.
 
 ## Routing — three transforms, one pipeline
 
