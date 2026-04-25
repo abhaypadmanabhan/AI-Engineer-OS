@@ -25,6 +25,10 @@ Dense retrieval is fuzzy. BM25 is literal. Combine both, then rerank the top 50.
 
 Cohere is now your default *embedder* (lesson 3.1) AND your paid *reranker* — same SDK, same key, same rate-limit budget. The free fallback for rerank stays `bge-reranker-v2-m3` (local, CPU, no key); using one vendor for both is fine and what most production stacks land on.
 
+<Callout kind="info" title="Trial tier ≠ usable throughput">
+Production embedders require a payment method to unlock usable throughput. Trial tiers (Cohere's 100K TPM, Voyage's 10K TPM) exist for API surface testing, not for indexing real corpora — embedding even 100 SEC 10-Ks at trial caps takes 3+ hours and burns the monthly call quota. Plan for paid-tier signup when scoping infrastructure, even if billed usage stays inside the free credit allotment; the rate limits change, not the pricing. This is one of those things tutorials skip.
+</Callout>
+
 ```python file=bm25_dense.py
 import os
 import numpy as np, cohere
