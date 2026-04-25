@@ -1,0 +1,119 @@
+---
+title: "L3 Mastery Gate: RAG over SEC 10-Ks"
+layer: 3
+order: 10
+minutes: 60
+cost_usd: 4.00
+p95_latency_ms: 4500
+stack: ["anthropic", "voyage", "rank_bm25", "sentence-transformers", "cohere", "ragas"]
+gate:
+  metric: "faithfulness"
+  threshold: 0.85
+  eval_script: "content/modules/03-rag/10-gate-rag-10k/eval.py"
+  dataset: "content/modules/03-rag/10-gate-rag-10k/data/eval_questions.json"
+interview_qs:
+  - q: "Walk me through the design decisions in your 10-K RAG pipeline. Why structural chunking instead of recursive? Why bge as default reranker? Why route HyDE only for multi-hop?"
+    answer: "Structural chunking because 10-Ks have explicit section headers (Item 1A. Risk Factors, Item 7. MD&A, Item 8. Financial Statements) and recursive sentence splitters cross those boundaries. The chunks must respect document structure — a chunk that mixes Risk Factors and MD&A produces a context that the generator interprets as one disclosure, which is wrong. bge-reranker-v2-m3 as default because it runs locally on CPU at ~30ms/pair, costs nothing, and lands within ~0.03 nDCG of Cohere rerank-v3.5 — that gap is rounding error for a teaching gate. Cohere is documented as the production upgrade. HyDE routed only for multi-hop because vague conceptual queries benefit most from answer-shaped retrieval; factual single-hop queries (revenue, auditor name) already match literal corpus text and HyDE can paraphrase the answer away from the matching token. Step-back for comparison because abstraction surfaces both filings' relevant sections in the same RRF pool; baseline retrieval keeps each filing in a silo."
+    difficulty: "senior"
+  - q: "Your faithfulness is 0.91 ± 0.02 across two seeds. What does the variance tell you, and what would you measure next before scaling 5x?"
+    answer: "0.02 stdev at faithfulness 0.91 means residual variance is dominated by judge sampling and server-side LLM noise, not algorithmic seed effects (chunk boundaries, RRF tie-breaks). That is a healthy signal: the pipeline is stable; the metric is the noisy part. Before scaling 5x I would measure (1) per-question variance, not just aggregate mean — a 0.02 aggregate can hide tail questions where one seed scores 0.4 and the other 1.0; (2) sensitivity to the judge model — re-score the same generations with Haiku 4.5 to estimate self-preference bias; (3) sensitivity to top_k and rerank candidate_k around the operating point. The 5x scale-up itself adds variance from corpus distribution (more filings = more retrieval false-positives in BM25 from rare-token collisions); I would expect context_precision to drop a small amount and pre-budget for that."
+    difficulty: "senior"
+  - q: "What is the failure mode you are most worried about in this pipeline that the current eval would NOT catch?"
+    answer: "Domain leakage between filings — the retriever fetches the right ticker's chunks but the generator picks up a stray ticker mention from a comparison or supplier reference inside another filing's risk factors and produces an answer that attributes one company's disclosure to another. Faithfulness will pass (the claim is in the context) and answer relevance will pass (the answer is on-topic), but the answer is wrong about WHO disclosed it. The current eval treats the retrieved context as a flat list and ragas does not check ticker attribution. Mitigations: chunk metadata (ticker + section) injected into the generator prompt with explicit attribution rules, and a custom metric that checks whether the answer's ticker matches the question's expected_tickers. This is the gap I would close first in production."
+    difficulty: "senior"
+---
+
+You have everything. Five lessons of components; one lesson to compose them. The pipeline:
+
+```python file=pipeline.py
+filings  = fetch_10ks(tickers, limit=100)                 # 3.10 EDGAR fetcher
+chunks   = structural_chunk(filings, seed=seed)           # 3.5 section-aware
+idx      = build_index(chunks, voyage="voyage-3")         # 3.6 dense + BM25
+retrieve = hybrid_then_rerank(idx, k=5, candidate_k=30)   # 3.6 RRF + bge
+
+def answer(q, qtype):
+    queries = route(q, qtype)              # 3.7 — HyDE | step-back | baseline
+    cands   = rrf([retrieve(q_i, 30) for q_i in queries])
+    ctx     = rerank(idx, q, cands, 5)
+    return generate(q, ctx)                # Sonnet, "answer from context or refuse"
+
+result = evaluate(qs, answers, ctxs, gts)  # 3.8 ragas — unchanged signature
+```
+
+Five files of someone else's framework code reduced to twelve lines that you can debug. That is the point of the entire layer.
+
+<CostMeter cost="$4.00" latency="180s" tokens="350k" />
+
+## Why structural chunking is mandatory on 10-Ks
+
+10-Ks have explicit section anchors:
+
+```
+## ITEM 1. BUSINESS
+...company description...
+## ITEM 1A. RISK FACTORS
+...risk disclosures...
+## ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS
+...MD&A...
+## ITEM 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA
+...statements + footnotes...
+```
+
+The fetcher inserts these markers; the chunker breaks on them. A recursive splitter (LangChain default, LlamaIndex `SentenceSplitter`) crosses these headers and produces chunks that mix Item 1 (descriptive) with Item 1A (risk-flavored) — the generator then mis-attributes risk language to the business overview. Structural chunking eliminates the entire failure class.
+
+```python file=chunk.py
+def chunk_filing(text, ticker, seed=0):
+    sections = split_on(r"^## (ITEM \d+[A-Z]?\.\s+[^\n]+)$", text)
+    chunks = []
+    for section, body in sections:
+        if len(body) <= 1500:
+            chunks.append({"ticker": ticker, "section": section, "text": body})
+        else:
+            # Long sections (Risk Factors, MD&A) need secondary splits;
+            # seed-jittered boundary surfaces real chunking variance.
+            chunks.extend(_split_long(body, ticker, section, seed))
+    return chunks
+```
+
+## Why two seeds, and what they actually control
+
+Production RAG is not bit-deterministic. Server-side LLM variance, judge sampling, and tie-broken sort orders all introduce noise at every component boundary. A single-seed run hides this. Two seeds with explicit jitter on the chunk boundary expose it.
+
+```python file=seeds.py
+SEEDS = (7, 42)
+# Each seed run produces (faith, ctx_prec, ans_rel, ctx_rec).
+# Report: mean ± stdev across seeds.
+# Gate: mean >= threshold.   stdev tells you margin of safety.
+```
+
+If faithfulness lands 0.91 ± 0.02 we ship; if 0.85 ± 0.05 we are at the edge and need to fix before scaling. The number that matters is not the mean alone — it is the lower confidence bound.
+
+## Routing — three transforms, one pipeline
+
+```python file=route.py
+def route(q, qtype):
+    if qtype == "comparison":  return _step_back(q)   # 3.7 — abstraction surfaces both filings
+    if qtype == "factual":     return [q]             # baseline — literal tokens win
+    return _hyde(q)                                   # multi_hop — answer-shaped retrieval
+```
+
+Every transform from 3.7 has a place; none is universal. The router is one Sonnet call cheaper than running all transforms in parallel and ~95% as accurate on the labeled dataset.
+
+## Faithfulness ≥ 0.85 AND context_precision ≥ 0.75
+
+Both must pass. Faithfulness alone is gameable (the generator picks one true sentence and stops); context_precision alone does not enforce grounded generation. The conjunction is the contract. Per SPEC.md L3 gate.
+
+```python file=gate.py
+passed = (
+    summary.faithfulness_mean      >= 0.85 and
+    summary.context_precision_mean >= 0.75
+)
+```
+
+<Callout kind="break" title="Watch it break">
+Run the proxy with HyDE forced on for ALL queries (no router). On factual single-hop queries — "What was AAPL's R&D in FY2023?" — the HyDE draft paraphrases the dollar amount, which embeds farther from the literal MD&A line item than the original query. Retrieval drops; faithfulness drops because the generator is reasoning over weaker context. The router is not a niceity — uniform transforms have a cost shape, and matching the transform to the query's structure is the win.
+</Callout>
+
+<MasteryGate metric="faithfulness" threshold={0.85} slug="03-rag/10-gate-rag-10k">
+Run `eval.py` (two seeds × 100 filings × 50 questions). Asserts faithfulness ≥ 0.85 AND context_precision ≥ 0.75 on the mean across seeds. Enter the faithfulness mean.
+</MasteryGate>
