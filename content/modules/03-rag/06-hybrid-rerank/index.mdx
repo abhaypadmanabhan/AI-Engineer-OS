@@ -122,6 +122,27 @@ for name, fn in configs.items():
 
 Numbers you should see on the shipped arXiv 20-Q eval. Each stage adds measurable lift; each stage adds cost and latency. Budget accordingly.
 
+## Metadata pre-filter — the single most common production fix
+
+Hybrid retrieval is not enough when your corpus contains multiple entities. The query "Apple FY2023 R&D" matches "research and development" tokens across every tech filing in your index — half the top-k will come from the wrong company. BM25 and dense both score on text similarity; neither knows about *whose* document a chunk belongs to. The fix is a metadata pre-filter:
+
+```python file=prefilter.py
+def hybrid_topk(idx, q, k, allowed_tickers=None):
+    mask = None
+    if allowed_tickers:
+        mask = np.array([c["ticker"] in allowed_tickers for c in idx["chunks"]])
+    dense_scores = idx["E"] @ qe
+    bm25_scores  = np.array(idx["bm25"].get_scores(q.lower().split()))
+    if mask is not None:
+        dense_scores = np.where(mask, dense_scores, -np.inf)   # not eligible for top-k
+        bm25_scores  = np.where(mask, bm25_scores,  -np.inf)
+    # …RRF as before
+```
+
+Critical: this is a *pre-filter*, not a post-filter. Non-matching chunks must never compete for top-k — masking to `-inf` before `argsort` is the cheap correct way. Post-filtering (retrieve top-50 then drop wrong-ticker rows) loses recall: when many top-50 are wrong-ticker, you end up with 5 right-ticker chunks instead of the 5 *best* right-ticker chunks.
+
+Where the metadata comes from: routing tier (LLM classifier maps the query to an entity), or — better — a structured query API (the user clicked "AAPL" before typing). Lesson 3.10's mastery gate uses ticker pre-filtering on SEC 10-Ks; we discovered the need empirically when context_precision tanked at 0.44 without it. The most common production RAG fix is not a smarter retriever — it is restricting *what the retriever is allowed to see*.
+
 <Callout kind="break" title="Watch it break">
 Swap `rank_bm25` for Elasticsearch-style BM25 with default analyzers and watch numeric queries regress. Default tokenizers lowercase and stem — "3e-4" becomes "3e 4" becomes two useless tokens. For numeric + alphanumeric queries, use a raw/keyword subfield (ES) or skip stemming (BM25Okapi defaults). Retrieval quality is downstream of tokenization.
 </Callout>
