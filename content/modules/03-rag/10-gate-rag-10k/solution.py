@@ -134,21 +134,41 @@ def _rrf(rankings: list[np.ndarray], k: int, k_rrf: int = 60) -> list[int]:
     return sorted(scores, key=scores.get, reverse=True)[:k]
 
 
-def _dense_topk(idx, q: str, k: int) -> list[int]:
+def _ticker_mask(idx, allowed_tickers: set[str] | None) -> np.ndarray | None:
+    """Boolean mask over chunks. None when no filter (general questions)."""
+    if not allowed_tickers:
+        return None
+    return np.array([c["ticker"] in allowed_tickers for c in idx["chunks"]])
+
+
+def _dense_topk(idx, q: str, k: int, mask: np.ndarray | None = None) -> list[int]:
     import cohere
     co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
     qe = np.array(co.embed(texts=[q], model=EMBED_MODEL, input_type="search_query").embeddings[0])
     qe /= np.linalg.norm(qe)
-    return list(np.argsort(-(idx["E"] @ qe))[:k])
+    scores = idx["E"] @ qe
+    if mask is not None:
+        scores = np.where(mask, scores, -np.inf)
+    return list(np.argsort(-scores)[:k])
 
 
-def _bm25_topk(idx, q: str, k: int) -> list[int]:
-    return list(np.argsort(-np.array(idx["bm25"].get_scores(q.lower().split())))[:k])
+def _bm25_topk(idx, q: str, k: int, mask: np.ndarray | None = None) -> list[int]:
+    scores = np.array(idx["bm25"].get_scores(q.lower().split()))
+    if mask is not None:
+        scores = np.where(mask, scores, -np.inf)
+    return list(np.argsort(-scores)[:k])
 
 
-def hybrid_topk(idx, q: str, k: int, seed: int = 0) -> list[int]:
+def hybrid_topk(idx, q: str, k: int, seed: int = 0,
+                allowed_tickers: set[str] | None = None) -> list[int]:
+    """Hybrid BM25+dense+RRF. If `allowed_tickers` is set, retrieval is restricted
+    to chunks whose `chunk["ticker"]` is in the set BEFORE scoring (metadata pre-filter,
+    not a post-filter — non-matching chunks never compete for top-k). When the set
+    is None, retrieval scans the entire corpus (fallback for cross-corpus questions)."""
     rng = random.Random(seed)
-    rankings = [np.array(_dense_topk(idx, q, 50)), np.array(_bm25_topk(idx, q, 50))]
+    mask = _ticker_mask(idx, allowed_tickers)
+    rankings = [np.array(_dense_topk(idx, q, 50, mask)),
+                np.array(_bm25_topk(idx, q, 50, mask))]
     if rng.random() < 0.5:
         rankings = list(reversed(rankings))
     return _rrf(rankings, k)
@@ -267,10 +287,19 @@ def run_pipeline(idx, eval_questions: list[dict], seed: int, top_k: int = 5,
     for i, item in enumerate(eval_questions):
         q = item["question"]
         transform_name, queries = _route(q, item["type"])
+        # Metadata pre-filter: restrict retrieval to chunks belonging to the
+        # question's expected tickers. Critical fix — without this, "Apple R&D"
+        # matches "research and development" tokens across all 99 filings and
+        # roughly half the top-k come from the wrong company. Pre-filter, not
+        # post-filter — non-matching chunks never compete for top-k.
+        # Falls back to no-filter when the question has no expected_tickers.
+        allowed = set(item.get("expected_tickers") or []) or None
         # Retrieve once per rewrite, RRF-fuse, then rerank.
         all_cands: list[np.ndarray] = []
         for q_i in queries:
-            all_cands.append(np.array(hybrid_topk(idx, q_i, candidate_k, seed=seed)))
+            all_cands.append(np.array(
+                hybrid_topk(idx, q_i, candidate_k, seed=seed, allowed_tickers=allowed)
+            ))
         fused = _rrf(all_cands, candidate_k)
         top = rerank_topk(idx, q, fused, top_k)
         ctx_chunks = [idx["chunks"][j] for j in top]
