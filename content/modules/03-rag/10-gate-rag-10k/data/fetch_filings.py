@@ -77,26 +77,75 @@ def _fetch_html(client: httpx.Client, cik: str, accession: str, primary_doc: str
 
 _TAG = re.compile(r"<[^>]+>")
 _WHITESPACE = re.compile(r"\s+")
+
+# Real 10-K section headings are typographically distinct: start-of-line in the
+# (block-tag-broken) DOM, on one logical line, and not preceded/followed by
+# cross-reference markers. SEC filings render headings as either ALL-CAPS or
+# Title-Case ("Item 1A. Risk Factors") depending on the issuer's stylesheet —
+# case-insensitive on the keyword, but capitalised title required.
+#
+# Two-stage filter:
+#   (1) regex: start-of-line + `Item N[A]?.` + horizontal whitespace only (no
+#       newlines between keyword and title — TOC entries split across newlines
+#       and would slip through `\s+`) + capitalised title.
+#   (2) post-filter rejects candidates whose title or next 30 chars contains
+#       cross-reference markers (of the, of this, in our, see, above, below).
 _ITEM_HEADER = re.compile(
-    r"\b(item\s+\d+[a-z]?\.?)\s+([a-z][a-z \-/&,]{2,80})",
+    r"(?:^|\n)\s*(Item[ \t]+\d+[A-Z]?\.?)[ \t]+([A-Z][A-Za-z \-/&,'’]{2,80})",
+    re.IGNORECASE,
+)
+_CROSS_REF_MARKERS = (
+    " of the", " of this", " in our", " see ", "see also", " above", " below",
+)
+
+
+def _is_real_heading(match: re.Match, text: str) -> bool:
+    """Reject candidates that look like section headings but are body-prose
+    cross-references. Window: the title itself + 30 chars after."""
+    title = match.group(2).lower()
+    after = text[match.end() : match.end() + 30].lower()
+    window = " " + title + " " + after
+    return not any(m in window for m in _CROSS_REF_MARKERS)
+
+
+_BLOCK_TAGS = re.compile(
+    r"</?(?:p|div|br|tr|table|h[1-6]|li|ul|ol|article|section)\b[^>]*>",
     re.IGNORECASE,
 )
 
 
 def _html_to_sectioned_text(html: str) -> str:
-    """Strip tags, normalize whitespace, insert explicit `\n\n## ITEM X. TITLE\n\n`
-    markers so the structural chunker (lesson 3.5) can split on section boundaries."""
-    text = _TAG.sub(" ", html)
+    """Strip tags + normalize whitespace, then insert explicit `\n\n## ITEM X. TITLE\n\n`
+    markers so the structural chunker (lesson 3.5) can split on section boundaries.
+
+    Preserves newlines from block-level HTML tags so the regex's start-of-line anchor
+    works — collapsing all whitespace destroys the typographic distinction between
+    real headings (start-of-line) and cross-references (mid-paragraph)."""
+    # 1. Replace block tags with newlines BEFORE stripping inline tags.
+    text = _BLOCK_TAGS.sub("\n", html)
+    # 2. Strip remaining inline tags. Substitute empty so that inline-styled
+    #    headings like `<span>SAFE</span><span>TY</span>` remain `SAFETY`,
+    #    not `SAFE TY` (block tags already became newlines in step 1).
+    text = _TAG.sub("", text)
     text = re.sub(r"&nbsp;|&#160;", " ", text)
     text = re.sub(r"&amp;", "&", text)
     text = re.sub(r"&lt;", "<", text)
     text = re.sub(r"&gt;", ">", text)
-    text = _WHITESPACE.sub(" ", text).strip()
+    # Curly quotes → ASCII so they don't break title regex char class.
+    text = text.replace("&#8217;", "'").replace("&#8216;", "'")
+    text = text.replace("&#8220;", '"').replace("&#8221;", '"')
+    text = text.replace("&#8211;", "-").replace("&#8212;", "-")
+    # 3. Collapse runs of horizontal whitespace, preserve newlines.
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{2,}", "\n\n", text)  # max 2 consecutive newlines
+    text = text.strip()
 
     out_lines: list[str] = []
     last = 0
     for m in _ITEM_HEADER.finditer(text):
-        if m.start() - last > 200:  # don't split on item-references inside prose
+        if not _is_real_heading(m, text):
+            continue
+        if m.start() - last > 200:  # don't split if too close to last heading
             out_lines.append(text[last : m.start()].strip())
             out_lines.append(f"\n\n## {m.group(1).upper().rstrip('.')}. {m.group(2).upper().strip()}\n\n")
             last = m.end()
