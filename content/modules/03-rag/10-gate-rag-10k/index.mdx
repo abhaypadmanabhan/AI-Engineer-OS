@@ -88,41 +88,64 @@ SEEDS = (7, 42)
 
 If faithfulness lands 0.91 ± 0.02 we ship; if 0.85 ± 0.05 we are at the edge and need to fix before scaling. The number that matters is not the mean alone — it is the lower confidence bound.
 
-## The retrieval miss we hit and how Ragas surfaced it
+## Debugging diary — what Ragas surfaced
 
-First proxy run: faithfulness landed at **0.97**, well past the 0.85 bar. Context_precision landed at **0.44** — half the threshold. The lesson is what those two numbers, side by side, tell you.
-
-A high faithfulness with a collapsing context_precision is a specific failure shape: *the generator is being honest about a lousy context*. When the retrieved chunks are wrong, the system politely says "Not in the provided context" or summarizes what it has — both of which Ragas marks as faithful, because every claim is in the context. Faithfulness measures whether the model lied; it does not measure whether the model had anything useful to lie about.
-
-Context_precision is the metric that catches retrieval misses. It asks: in the top-k chunks I fetched, ranked by my retriever, how many are actually relevant to the question? At 0.44, less than half of the rank-weighted chunks were judged relevant. Faithfulness was healthy, retrieval was not.
+First proxy run:
 
 ```text
 faithfulness     : 0.970   ← pipeline is grounded
 context_precision: 0.439   ← retrieval is wrong
-answer_relevance : 0.159   ← answers are off-topic (downstream of bad context)
-context_recall   : 0.369   ← ground-truth info absent from context
+answer_relevance : 0.159
+context_recall   : 0.369
 ```
 
-Diagnosis took ten minutes. Three suspects ranked: (1) judge harshness — ruled out, faithfulness 0.97 means judge is calibrated; (2) chunking destroyed structure — ruled out, structural splits work and `seed_7.json` shows correct sections; (3) **retriever fetching wrong-ticker chunks** — confirmed, the `expected_tickers` field in `eval_questions.json` was carried through the eval set but never reached the retrieval call. "Apple FY2023 R&D" was matching `research and development` token co-occurrences across 99 filings; ~half the top-5 came from the wrong company.
+High faithfulness + collapsing ctx_precision is a specific failure shape: the generator is being honest about a lousy context. Faithfulness asks whether the answer is grounded in retrieved chunks; it does not ask whether those chunks were the right ones to retrieve.
 
-The fix is a metadata pre-filter — ten lines of code, the single most common production RAG fix. Lesson 3.6 covers the pattern in detail. Here is what it looks like wired into our hybrid retriever:
+Diagnosis: the `expected_tickers` field on each eval question was never reaching the retriever. "Apple R&D" was matching `research and development` tokens across 99 filings; ~half the top-5 came from wrong companies. Fix is a metadata pre-filter — the most common production RAG fix:
 
 ```python file=prefilter.py
 def hybrid_topk(idx, q, k, allowed_tickers=None):
     mask = (np.array([c["ticker"] in allowed_tickers for c in idx["chunks"]])
             if allowed_tickers else None)
-    dense_scores = idx["E"] @ qe
-    bm25_scores  = np.array(idx["bm25"].get_scores(q.lower().split()))
+    dense = idx["E"] @ qe
+    bm25  = np.array(idx["bm25"].get_scores(q.lower().split()))
     if mask is not None:
-        dense_scores = np.where(mask, dense_scores, -np.inf)
-        bm25_scores  = np.where(mask, bm25_scores,  -np.inf)
-    return rrf([np.argsort(-dense_scores)[:50],
-                np.argsort(-bm25_scores)[:50]], k)
+        dense = np.where(mask, dense, -np.inf)
+        bm25  = np.where(mask, bm25,  -np.inf)
+    return rrf([np.argsort(-dense)[:50], np.argsort(-bm25)[:50]], k)
 ```
 
-Pre-filter, not post-filter. Wrong-ticker chunks must never compete for top-k. `np.where(mask, scores, -np.inf)` is the cheap correct way: ineligible chunks are guaranteed to fall out of `argsort` regardless of how strong their text-similarity score happens to be.
+Pre-filter, not post-filter. Wrong-ticker chunks must never compete for top-k.
 
-The lesson is not "we hit a bug and fixed it." The lesson is that **Ragas's four metrics together form a diagnostic, not just a gate**: high faithfulness + low context_precision means retriever, not generator. Low faithfulness + high context_precision means generator, not retriever. Low both means chunking. The metric set is a triage tool. Read the conjunction, not the headline.
+## When a correct fix makes the score drop
+
+We re-ran with the ticker pre-filter:
+
+```text
+                  before fix   after fix
+faithfulness     :    0.970      0.961
+context_precision:    0.439  →   0.346   ← regressed
+context_recall   :    0.369      0.286   (regressed)
+answer_relevance :    0.159      0.445
+```
+
+Pre-filter worked perfectly — 0/50 questions retrieved a wrong-ticker chunk in top-3. The fix did exactly what it should. The metric still dropped. This is the most informative outcome a debugging loop can produce: a correct fix exposing the next bug.
+
+Interpretation: the unfiltered run had been padded by *lucky cross-corpus matches* — BM25 hitting "research and development" tokens in any tech filing, the judge marginally accepting those. With pre-filter only right-ticker chunks compete; real precision was always ~0.35, the 0.44 was tolerance for noise. The drop wasn't regression — it was the metric finally telling the truth.
+
+Inspecting retrieved contexts surfaced the next bug: section labels were noise. Real 10-K headings are start-of-line anchors — `Item 1A. Risk Factors`. Our extractor was matching cross-references in body prose — `see Item 7. of this Form 10-K`:
+
+```
+[AAPL | ITEM 7. OF THE COMPANY&]   ← cross-ref, not heading
+[NVDA | ITEM 7. IN OUR ANNUAL REPORT ON FORM]
+[META | ITEM 16. FORM]
+```
+
+Sections split at every cross-reference. Chunks started mid-sentence.
+
+Fix two: tighten section regex. Require start-of-line, horizontal-whitespace-only between `Item N` and title (TOC entries split across newlines fail), capitalised title, post-filter rejecting cross-reference markers (`of the`, `of this`, `in our`, `see`, `above`, `below`) in title or 30-char window. Replace block-level HTML tags with newlines before stripping inline tags so the start-of-line anchor survives DOM-to-text. AAPL went from 6 garbage labels to 16 real ones. Refetched all 99.
+
+The lesson: **Ragas's four metrics together are a diagnostic, not just a gate**. High faithfulness + low ctx_precision means retriever or chunking, not generator. A correct fix to retrieval can reveal that chunking was the bigger bug; a correct fix to chunking can reveal the embedder is wrong. Read the conjunction, not the headline; read the per-question diff, not the aggregate; expect the second bug.
 
 ## Routing — three transforms, one pipeline
 
