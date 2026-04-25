@@ -6,14 +6,14 @@ THRESHOLD = 0.85
 
 
 def main() -> int:
-    if not (os.environ.get("VOYAGE_API_KEY") and os.environ.get("ANTHROPIC_API_KEY")):
-        print("skip: VOYAGE_API_KEY and ANTHROPIC_API_KEY required")
+    if not (os.environ.get("COHERE_API_KEY") and os.environ.get("ANTHROPIC_API_KEY")):
+        print("skip: COHERE_API_KEY and ANTHROPIC_API_KEY required")
         return 1
     import json
     from pathlib import Path
 
     import numpy as np
-    import voyageai
+    import cohere
 
     from solution import (
         decompose,
@@ -27,7 +27,7 @@ def main() -> int:
         step_back,
     )
 
-    vo = voyageai.Client()
+    co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
     corpus = load_corpus()
     texts, E, bm25 = build_index(corpus)
     eval_set = json.loads(
@@ -35,7 +35,7 @@ def main() -> int:
     )
 
     def dense_topk(q, k):
-        qe = np.array(vo.embed([q], model="voyage-3", input_type="query").embeddings[0])
+        qe = np.array(co.embed(texts=[q], model="embed-english-v3.0", input_type="search_query").embeddings[0])
         qe /= np.linalg.norm(qe)
         return list(np.argsort(-(E @ qe))[:k])
 

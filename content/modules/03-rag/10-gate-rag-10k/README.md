@@ -14,7 +14,7 @@ Every prior L3 lesson, composed into one pipeline:
 |---|---|---|
 | Data | latest 10-K per ticker | `data/fetch_filings.py` (EDGAR) |
 | Chunking | structural (Item X. markers) + jittered fallback | `solution.py:chunk_filing` (3.5 pattern) |
-| Retrieval | hybrid BM25+voyage-3+RRF | `solution.py:hybrid_topk` (3.6 pattern) |
+| Retrieval | hybrid BM25+embed-english-v3.0+RRF | `solution.py:hybrid_topk` (3.6 pattern) |
 | Rerank | Cohere rerank-v3.5 if key, else bge-reranker-v2-m3 | `solution.py:rerank_topk` (3.6 pattern) |
 | Query transforms | HyDE for multi-hop, step-back for comparison, baseline for factual | `solution.py:_route` (3.7 pattern) |
 | Generation | Sonnet 4.6 with strict "answer-from-context-or-refuse" prompt | `solution.py:generate` |

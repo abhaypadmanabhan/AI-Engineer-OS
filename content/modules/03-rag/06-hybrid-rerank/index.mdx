@@ -5,7 +5,7 @@ order: 6
 minutes: 45
 cost_usd: 0.10
 p95_latency_ms: 3000
-stack: ["rank_bm25", "voyage", "sentence-transformers", "cohere"]
+stack: ["rank_bm25", "cohere", "sentence-transformers"]
 gate:
   metric: "ndcg_at_10"
   threshold: 0.80
@@ -23,23 +23,26 @@ interview_qs:
 
 Dense retrieval is fuzzy. BM25 is literal. Combine both, then rerank the top 50. Measure the lift.
 
+Cohere is now your default *embedder* (lesson 3.1) AND your paid *reranker* — same SDK, same key, same rate-limit budget. The free fallback for rerank stays `bge-reranker-v2-m3` (local, CPU, no key); using one vendor for both is fine and what most production stacks land on.
+
 ```python file=bm25_dense.py
-import numpy as np, voyageai
+import os
+import numpy as np, cohere
 from rank_bm25 import BM25Okapi
-vo = voyageai.Client()
+co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
 
 corpus = [(c, aid) for c, aid in load_chunks()]   # from lesson 3.5's best chunker
 texts = [c for c, _ in corpus]
 
-# Dense — cosine on voyage-3
-E = np.array(vo.embed(texts, model="voyage-3", input_type="document").embeddings)
+# Dense — cosine on embed-english-v3.0
+E = np.array(co.embed(texts=texts, model="embed-english-v3.0", input_type="search_document").embeddings)
 E /= np.linalg.norm(E, axis=1, keepdims=True)
 
 # Sparse — BM25 on whitespace-tokenized lowercase
 bm25 = BM25Okapi([t.lower().split() for t in texts])
 
 def retrieve(query: str, k: int = 10) -> list[int]:
-    qe = np.array(vo.embed([query], model="voyage-3", input_type="query").embeddings[0])
+    qe = np.array(co.embed(texts=[query], model="embed-english-v3.0", input_type="search_query").embeddings[0])
     qe /= np.linalg.norm(qe)
     dense_ranks = np.argsort(-(E @ qe))
     sparse_ranks = np.argsort(-np.array(bm25.get_scores(query.lower().split())))

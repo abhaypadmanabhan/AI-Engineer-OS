@@ -7,8 +7,8 @@ THRESHOLD = 0.80
 
 
 def main() -> int:
-    if not os.environ.get("VOYAGE_API_KEY"):
-        print("skip: VOYAGE_API_KEY not set")
+    if not os.environ.get("COHERE_API_KEY"):
+        print("skip: COHERE_API_KEY not set")
         return 1
     from solution import (
         build_index,
@@ -19,10 +19,10 @@ def main() -> int:
     import json
     from pathlib import Path
     import numpy as np
-    import voyageai
+    import cohere
     from rank_bm25 import BM25Okapi
 
-    vo = voyageai.Client()
+    co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
     corpus = load_corpus()
     texts, E, bm25 = build_index(corpus)
     eval_set = json.loads(
@@ -30,7 +30,7 @@ def main() -> int:
     )
 
     def dense_topk(q, k):
-        qe = np.array(vo.embed([q], model="voyage-3", input_type="query").embeddings[0])
+        qe = np.array(co.embed(texts=[q], model="embed-english-v3.0", input_type="search_query").embeddings[0])
         qe /= np.linalg.norm(qe)
         return list(np.argsort(-(E @ qe))[:k])
 

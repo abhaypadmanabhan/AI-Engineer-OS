@@ -5,7 +5,7 @@ order: 5
 minutes: 45
 cost_usd: 0.12
 p95_latency_ms: 2400
-stack: ["voyage", "numpy", "tiktoken"]
+stack: ["cohere", "numpy", "tiktoken"]
 gate:
   metric: "best_chunker_recall_at_5"
   threshold: 0.75
@@ -64,14 +64,15 @@ Splits on paragraph breaks first, then line breaks, then sentences, then words. 
 ## Semantic — embed, detect breakpoints
 
 ```python file=semantic.py
-import numpy as np, voyageai
-vo = voyageai.Client()
+import os
+import numpy as np, cohere
+co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
 
 def semantic(text: str, size: int = 500, threshold_pct: int = 90) -> list[str]:
     sents = [s.strip() for s in text.split(". ") if s.strip()]
     if len(sents) < 3:
         return [text]
-    E = np.array(vo.embed(sents, model="voyage-3", input_type="document").embeddings)
+    E = np.array(co.embed(texts=sents, model="embed-english-v3.0", input_type="search_document").embeddings)
     E /= np.linalg.norm(E, axis=1, keepdims=True)
     # Adjacent-sentence cosine: low similarity = topic boundary
     sims = (E[:-1] * E[1:]).sum(axis=1)
@@ -90,7 +91,7 @@ def semantic(text: str, size: int = 500, threshold_pct: int = 90) -> list[str]:
 
 Embeds every sentence once to find topic shifts — paid per corpus, not per query. Wins on narrative text (papers, transcripts). Loses when the cost of embedding during ingest matters more than a 3-5% recall bump.
 
-At 500 10-Ks (~Capstone M2 scale, ≈50M content tokens at voyage-3 $0.06/1M), semantic chunking costs ≈ **$6.00** to ingest vs **$3.00** for recursive — a **2× premium** for the ~5-point recall@5 lift shown above. Recursive is the right default until you measure the lift on your corpus and decide it is worth it.
+At 500 10-Ks (~Capstone M2 scale, ≈50M content tokens at embed-english-v3.0 $0.10/1M), semantic chunking costs ≈ **$6.00** to ingest vs **$3.00** for recursive — a **2× premium** for the ~5-point recall@5 lift shown above. Recursive is the right default until you measure the lift on your corpus and decide it is worth it.
 
 ## Structural — use the document's own structure
 

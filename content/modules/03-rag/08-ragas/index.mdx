@@ -5,7 +5,7 @@ order: 8
 minutes: 45
 cost_usd: 0.45
 p95_latency_ms: null
-stack: ["ragas", "langchain-anthropic", "langchain-voyageai", "anthropic", "voyage"]
+stack: ["ragas", "langchain-anthropic", "langchain-cohere", "anthropic", "cohere"]
 gate:
   metric: "faithfulness"
   threshold: 0.85
@@ -43,10 +43,10 @@ from ragas.metrics import (
     LLMContextPrecisionWithReference, LLMContextRecall,
 )
 from langchain_anthropic import ChatAnthropic
-from langchain_voyageai import VoyageAIEmbeddings
+from langchain_cohere import CohereEmbeddings
 
 llm = LangchainLLMWrapper(ChatAnthropic(model="claude-sonnet-4-6", temperature=0, max_tokens=1024))
-emb = LangchainEmbeddingsWrapper(VoyageAIEmbeddings(model="voyage-3"))
+emb = LangchainEmbeddingsWrapper(CohereEmbeddings(model="embed-english-v3.0"))
 
 samples = [SingleTurnSample(user_input=q, response=a, retrieved_contexts=c, reference=g)
            for q, a, c, g in zip(questions, answers, contexts, ground_truths)]
@@ -59,7 +59,7 @@ result = ragas_evaluate(
 df = result.to_pandas()     # per-example scores + means
 ```
 
-Ragas defaults to OpenAI; the three `Langchain*Wrapper` lines route every judge call through Anthropic and every embedding call through Voyage. Swap `claude-sonnet-4-6` for `claude-haiku-4-5` to cut judge cost ~5× when you are iterating.
+Ragas defaults to OpenAI; the three `Langchain*Wrapper` lines route every judge call through Anthropic and every embedding call through Cohere. Swap `claude-sonnet-4-6` for `claude-haiku-4-5` to cut judge cost ~5× when you are iterating.
 
 <CostMeter cost="$0.45" latency="120s" tokens="60k" />
 

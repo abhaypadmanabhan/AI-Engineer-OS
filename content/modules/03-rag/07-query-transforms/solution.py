@@ -15,11 +15,11 @@ from anthropic import Anthropic
 sys.path.insert(0, str(Path(__file__).parent.parent / "06-hybrid-rerank"))
 from solution import build_index, eval_config, load_corpus, rrf  # noqa: E402
 
-import voyageai  # noqa: E402
+import cohere
 
 EVAL_PATH = Path(__file__).parent.parent / "03-naive-rag" / "data" / "eval_questions.json"
 MODEL = "claude-sonnet-4-6"
-vo = voyageai.Client()
+co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
 client = Anthropic()
 
 
@@ -83,13 +83,13 @@ def make_transform_retriever(
 
 
 def main() -> None:
-    assert os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("VOYAGE_API_KEY")
+    assert os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("COHERE_API_KEY")
     corpus = load_corpus()
     texts, E, bm25 = build_index(corpus)
     eval_set = json.loads(EVAL_PATH.read_text())
 
     def dense_topk(q: str, k: int) -> list[int]:
-        qe = np.array(vo.embed([q], model="voyage-3", input_type="query").embeddings[0])
+        qe = np.array(co.embed(texts=[q], model="embed-english-v3.0", input_type="search_query").embeddings[0])
         qe /= np.linalg.norm(qe)
         return list(np.argsort(-(E @ qe))[:k])
 

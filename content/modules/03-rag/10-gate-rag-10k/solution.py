@@ -2,7 +2,7 @@
 
 Composes every prior lesson:
 - 3.5 structural chunking (section-aware splits on `## ITEM X.` markers)
-- 3.6 hybrid retrieval (BM25 + voyage-3 + RRF) + bge-reranker (Cohere if key present)
+- 3.6 hybrid retrieval (BM25 + embed-english-v3.0 + RRF) + bge-reranker (Cohere if key present)
 - 3.7 query transforms (HyDE for vague, step-back for comparison)
 - 3.8 evaluate() — Ragas harness imported unchanged
 
@@ -37,12 +37,19 @@ from typing import Iterable
 import numpy as np
 from anthropic import Anthropic
 
-# Reuse 3.8 ragas harness verbatim.
-sys.path.insert(0, str(Path(__file__).parent.parent / "08-ragas"))
-from solution import RagasResult, evaluate  # noqa: E402
+# Reuse 3.8 ragas harness verbatim. Load by file path to avoid the
+# `solution` module name clash with this file.
+import importlib.util as _importlib_util
+_ragas_path = Path(__file__).parent.parent / "08-ragas" / "solution.py"
+_spec = _importlib_util.spec_from_file_location("ragas_harness_3_8", _ragas_path)
+_ragas_mod = _importlib_util.module_from_spec(_spec)
+sys.modules["ragas_harness_3_8"] = _ragas_mod   # required so @dataclass can resolve __module__
+_spec.loader.exec_module(_ragas_mod)
+RagasResult = _ragas_mod.RagasResult
+evaluate = _ragas_mod.evaluate
 
 MODEL = "claude-sonnet-4-6"
-EMBED_MODEL = "voyage-3"
+EMBED_MODEL = "embed-english-v3.0"
 MAX_CHUNK_CHARS = 1500
 MAX_CHUNK_OVERLAP = 100
 
@@ -100,18 +107,18 @@ def chunk_filing(text: str, ticker: str, seed: int = 0) -> list[dict]:
 # =========================================================================
 
 def build_index(chunks: list[dict]):
-    import voyageai
+    import cohere
     from rank_bm25 import BM25Okapi
 
-    vo = voyageai.Client()
+    co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
     texts = [c["text"] for c in chunks]
-    # voyage-3 has 32k token batch limit, but we are well within that with 1500-char chunks;
+    # embed-english-v3.0 has 32k token batch limit, but we are well within that with 1500-char chunks;
     # batch in 128 to stay under request size limits.
     embs: list[list[float]] = []
     BATCH = 128
     for i in range(0, len(texts), BATCH):
         batch = texts[i : i + BATCH]
-        embs.extend(vo.embed(batch, model=EMBED_MODEL, input_type="document").embeddings)
+        embs.extend(co.embed(texts=batch, model=EMBED_MODEL, input_type="search_document").embeddings)
         print(f"  embedded {min(i+BATCH, len(texts))}/{len(texts)}", flush=True)
     E = np.array(embs)
     E /= np.linalg.norm(E, axis=1, keepdims=True)
@@ -128,9 +135,9 @@ def _rrf(rankings: list[np.ndarray], k: int, k_rrf: int = 60) -> list[int]:
 
 
 def _dense_topk(idx, q: str, k: int) -> list[int]:
-    import voyageai
-    vo = voyageai.Client()
-    qe = np.array(vo.embed([q], model=EMBED_MODEL, input_type="query").embeddings[0])
+    import cohere
+    co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
+    qe = np.array(co.embed(texts=[q], model=EMBED_MODEL, input_type="search_query").embeddings[0])
     qe /= np.linalg.norm(qe)
     return list(np.argsort(-(idx["E"] @ qe))[:k])
 

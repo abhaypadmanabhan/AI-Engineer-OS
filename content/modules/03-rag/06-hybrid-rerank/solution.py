@@ -5,10 +5,10 @@ import os
 from pathlib import Path
 
 import numpy as np
-import voyageai
+import cohere
 from rank_bm25 import BM25Okapi
 
-vo = voyageai.Client()
+co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
 ARXIV_DIR = Path(__file__).parent.parent / "03-naive-rag" / "data" / "arxiv"
 EVAL_PATH = Path(__file__).parent.parent / "03-naive-rag" / "data" / "eval_questions.json"
 
@@ -27,7 +27,7 @@ def load_corpus() -> list[tuple[str, str]]:
 
 def build_index(corpus: list[tuple[str, str]]):
     texts = [c for c, _ in corpus]
-    E = np.array(vo.embed(texts, model="voyage-3", input_type="document").embeddings)
+    E = np.array(co.embed(texts=texts, model="embed-english-v3.0", input_type="search_document").embeddings)
     E /= np.linalg.norm(E, axis=1, keepdims=True)
     bm25 = BM25Okapi([t.lower().split() for t in texts])
     return texts, E, bm25
@@ -60,13 +60,13 @@ def eval_config(get_retrieval, corpus, eval_set, k: int = 10) -> float:
 
 
 def main() -> None:
-    assert os.environ.get("VOYAGE_API_KEY")
+    assert os.environ.get("COHERE_API_KEY")
     corpus = load_corpus()
     texts, E, bm25 = build_index(corpus)
     eval_set = json.loads(EVAL_PATH.read_text())
 
     def dense_topk(q: str, k: int) -> list[int]:
-        qe = np.array(vo.embed([q], model="voyage-3", input_type="query").embeddings[0])
+        qe = np.array(co.embed(texts=[q], model="embed-english-v3.0", input_type="search_query").embeddings[0])
         qe /= np.linalg.norm(qe)
         return list(np.argsort(-(E @ qe))[:k])
 

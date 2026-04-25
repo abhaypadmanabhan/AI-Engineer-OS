@@ -9,17 +9,17 @@ DATA = Path(__file__).parent / "data"
 
 
 def main() -> int:
-    if not os.environ.get("VOYAGE_API_KEY"):
-        print("skip: VOYAGE_API_KEY not set")
+    if not os.environ.get("COHERE_API_KEY"):
+        print("skip: COHERE_API_KEY not set")
         return 1
     if not (DATA / "arxiv").exists():
         print("skip: run data/download_arxiv.sh first")
         return 1
 
     import numpy as np
-    import voyageai
+    import cohere
 
-    vo = voyageai.Client()
+    co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
 
     def chunk(t: str, size: int = 500) -> list[str]:
         return [t[i : i + size] for i in range(0, len(t), size)]
@@ -29,13 +29,13 @@ def main() -> int:
         for c in chunk(path.read_text()):
             corpus.append((c, path.stem))
     texts = [c for c, _ in corpus]
-    embs = np.array(vo.embed(texts, model="voyage-3", input_type="document").embeddings)
+    embs = np.array(co.embed(texts=texts, model="embed-english-v3.0", input_type="search_document").embeddings)
     embs /= np.linalg.norm(embs, axis=1, keepdims=True)
 
     eval_set = json.loads((DATA / "eval_questions.json").read_text())
     hits = 0
     for item in eval_set:
-        qe = np.array(vo.embed([item["question"]], model="voyage-3", input_type="query").embeddings[0])
+        qe = np.array(co.embed(texts=[item["question"]], model="embed-english-v3.0", input_type="search_query").embeddings[0])
         qe /= np.linalg.norm(qe)
         top5 = embs @ qe
         retrieved_ids = {corpus[i][1] for i in top5.argsort()[-5:][::-1]}

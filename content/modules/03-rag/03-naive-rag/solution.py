@@ -4,10 +4,10 @@ import os
 from pathlib import Path
 
 import numpy as np
-import voyageai
+import cohere
 from anthropic import Anthropic
 
-vo = voyageai.Client()
+co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
 claude = Anthropic()
 DATA = Path(__file__).parent / "data"
 
@@ -23,13 +23,13 @@ def build_index() -> tuple[np.ndarray, list[tuple[str, str]]]:
         for c in chunk(path.read_text()):
             corpus.append((c, path.stem))
     texts = [c for c, _ in corpus]
-    embs = np.array(vo.embed(texts, model="voyage-3", input_type="document").embeddings)
+    embs = np.array(co.embed(texts=texts, model="embed-english-v3.0", input_type="search_document").embeddings)
     embs /= np.linalg.norm(embs, axis=1, keepdims=True)
     return embs, corpus
 
 
 def retrieve(query: str, embs: np.ndarray, corpus: list[tuple[str, str]], k: int = 5) -> list[tuple[str, str]]:
-    qe = np.array(vo.embed([query], model="voyage-3", input_type="query").embeddings[0])
+    qe = np.array(co.embed(texts=[query], model="embed-english-v3.0", input_type="search_query").embeddings[0])
     qe /= np.linalg.norm(qe)
     scores = embs @ qe
     return [corpus[i] for i in scores.argsort()[-k:][::-1]]
@@ -59,7 +59,7 @@ def recall_at_k(embs: np.ndarray, corpus: list[tuple[str, str]], k: int = 5) -> 
 
 
 def main() -> None:
-    assert os.environ.get("VOYAGE_API_KEY") and os.environ.get("ANTHROPIC_API_KEY")
+    assert os.environ.get("COHERE_API_KEY") and os.environ.get("ANTHROPIC_API_KEY")
     embs, corpus = build_index()
     score = recall_at_k(embs, corpus, k=5)
     print(f"recall_at_5={score:.2f}  (corpus={len(corpus)} chunks, docs={len({d for _, d in corpus})})")

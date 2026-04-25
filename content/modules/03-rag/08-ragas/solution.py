@@ -1,6 +1,6 @@
 """Ragas harness — faithfulness, answer_relevance, context_precision, context_recall.
 
-PRIMARY PATH: the `ragas` library with an Anthropic-backed judge + Voyage embeddings.
+PRIMARY PATH: the `ragas` library with an Anthropic-backed judge + Cohere embeddings.
 This is the exact signature 3.10 (L3 mastery gate) and Capstone M2 import — no
 teaching wrappers on the primary path.
 
@@ -63,12 +63,12 @@ def evaluate(
         ResponseRelevancy,
     )
     from langchain_anthropic import ChatAnthropic
-    from langchain_voyageai import VoyageAIEmbeddings
+    from langchain_cohere import CohereEmbeddings
 
     llm = LangchainLLMWrapper(
         ChatAnthropic(model=judge_model, temperature=0, max_tokens=1024)
     )
-    embeddings = LangchainEmbeddingsWrapper(VoyageAIEmbeddings(model="voyage-3"))
+    embeddings = LangchainEmbeddingsWrapper(CohereEmbeddings(model="embed-english-v3.0"))
 
     samples = [
         SingleTurnSample(

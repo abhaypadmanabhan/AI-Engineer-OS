@@ -7,8 +7,8 @@ THRESHOLD = 0.75
 
 
 def main() -> int:
-    if not os.environ.get("VOYAGE_API_KEY"):
-        print("skip: VOYAGE_API_KEY not set")
+    if not os.environ.get("COHERE_API_KEY"):
+        print("skip: COHERE_API_KEY not set")
         return 1
     arxiv_dir = Path(__file__).parent.parent / "03-naive-rag" / "data" / "arxiv"
     if not arxiv_dir.exists():

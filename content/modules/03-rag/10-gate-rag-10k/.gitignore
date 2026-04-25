@@ -1,0 +1,5 @@
+# Lesson-specific: regenerable artifacts from data/fetch_filings.py + eval.py
+data/filings/
+data/fetch.log
+data/fetch_summary.json
+data/proxy_run_results.json

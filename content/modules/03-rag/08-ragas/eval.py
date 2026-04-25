@@ -10,7 +10,7 @@ CONTEXT_PRECISION_THRESHOLD = 0.75
 
 
 def main() -> int:
-    missing = [k for k in ("ANTHROPIC_API_KEY", "VOYAGE_API_KEY") if not os.environ.get(k)]
+    missing = [k for k in ("ANTHROPIC_API_KEY", "COHERE_API_KEY") if not os.environ.get(k)]
     if missing:
         print(f"skip: missing {', '.join(missing)}")
         return 1
@@ -23,13 +23,13 @@ def main() -> int:
     sys.path.insert(0, str(Path(__file__).parent.parent / "07-query-transforms"))
     from solution import build_index, load_corpus, rrf  # noqa: E402  (3.6)
     from solution import hyde, make_transform_retriever  # noqa: E402  (3.7)
-    import voyageai
+    import cohere
 
     # Ragas harness.
     sys.path.insert(0, str(Path(__file__).parent))
     from solution import evaluate  # noqa: E402
 
-    vo = voyageai.Client()
+    co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
     client = Anthropic()
 
     corpus = load_corpus()
@@ -42,7 +42,7 @@ def main() -> int:
                 for g in json.loads((Path(__file__).parent / "data" / "ground_truth_answers.json").read_text())}
 
     def dense_topk(q, k):
-        qe = np.array(vo.embed([q], model="voyage-3", input_type="query").embeddings[0])
+        qe = np.array(co.embed(texts=[q], model="embed-english-v3.0", input_type="search_query").embeddings[0])
         qe /= np.linalg.norm(qe)
         return list(np.argsort(-(E @ qe))[:k])
 

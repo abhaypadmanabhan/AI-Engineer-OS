@@ -27,7 +27,7 @@ def _stdev(xs: list[float]) -> float:
 
 
 def main() -> int:
-    missing = [k for k in ("ANTHROPIC_API_KEY", "VOYAGE_API_KEY") if not os.environ.get(k)]
+    missing = [k for k in ("ANTHROPIC_API_KEY", "COHERE_API_KEY") if not os.environ.get(k)]
     if missing:
         print(f"skip: missing {', '.join(missing)}")
         return 1

@@ -5,7 +5,7 @@ order: 1
 minutes: 30
 cost_usd: 0.00
 p95_latency_ms: null
-stack: ["numpy", "voyage", "matplotlib"]
+stack: ["numpy", "cohere", "matplotlib"]
 gate:
   metric: "cosine_correctness"
   threshold: 1.0
@@ -14,10 +14,10 @@ interview_qs:
     answer: "A dense vector in R^d where semantically similar inputs land close together under some distance metric — typically cosine or dot product on L2-normalized vectors."
     difficulty: "junior"
   - q: "Cosine or dot product — and when does the choice matter?"
-    answer: "Equivalent on L2-normalized vectors. Voyage, OpenAI, and Cohere return normalized embeddings, so dot product is fine and ~2x faster. It matters only when vectors are unnormalized (custom encoders, concatenated features) — then magnitude leaks into scores."
+    answer: "Equivalent on L2-normalized vectors. Cohere, OpenAI, and Voyage return normalized embeddings, so dot product is fine and ~2x faster. It matters only when vectors are unnormalized (custom encoders, concatenated features) — then magnitude leaks into scores."
     difficulty: "mid"
   - q: "Why not just use word2vec or GloVe in 2026?"
-    answer: "Context-blind. 'bank' in 'river bank' vs 'bank account' gets the same vector. Modern encoders (voyage-3, text-embedding-3, e5) are contextual transformers trained on retrieval objectives — order-of-magnitude better nDCG on any real corpus."
+    answer: "Context-blind. 'bank' in 'river bank' vs 'bank account' gets the same vector. Modern encoders (embed-english-v3.0, text-embedding-3, e5) are contextual transformers trained on retrieval objectives — order-of-magnitude better nDCG on any real corpus."
     difficulty: "junior"
 ---
 
@@ -46,11 +46,11 @@ That is the whole retrieval primitive. A vector, another vector, one scalar out.
 
 ## Real embeddings in one call
 
-Swap the hand-picked vectors for a production encoder. Voyage's free tier covers this entire layer.
+Swap the hand-picked vectors for a production encoder. Cohere's free tier covers this entire layer.
 
-```python file=voyage_embed.py
-import os, numpy as np, voyageai
-vo = voyageai.Client()  # uses VOYAGE_API_KEY
+```python file=cohere_embed.py
+import os, numpy as np, cohere
+co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
 
 titles = [
     "Attention Is All You Need",
@@ -59,7 +59,7 @@ titles = [
     "High-Resolution Image Synthesis with Latent Diffusion Models",
     "Language Models are Few-Shot Learners",
 ]
-r = vo.embed(titles, model="voyage-3", input_type="document")
+r = co.embed(texts=titles, model="embed-english-v3.0", input_type="search_document")
 E = np.array(r.embeddings)              # shape (5, 1024)
 E /= np.linalg.norm(E, axis=1, keepdims=True)   # L2-normalize once
 
@@ -70,7 +70,11 @@ print(np.round(sims, 2))
 
 <CostMeter cost="$0.00" latency="0.4s" tokens="40" />
 
-Voyage returns 1024-dim vectors. They are *already* L2-normalized by the provider, but we normalize defensively — the next time you swap in an unnormalized encoder (fine-tuned e5, SBERT), this code stays correct.
+Cohere `embed-english-v3.0` returns 1024-dim vectors, already L2-normalized by the provider; we normalize defensively so the next time you swap in an unnormalized encoder (fine-tuned e5, SBERT), this code stays correct.
+
+<Callout kind="info" title="Alternatives">
+Voyage `voyage-3` (1024-dim, slightly stronger nDCG on document retrieval benchmarks) and OpenAI `text-embedding-3-small` (1536-dim, lower cost on long-context) are drop-in alternatives. We default to Cohere because signup needs only an email — Voyage requires a business entity (tax ID, company address) which excludes solo learners. If your employer is already a Voyage customer, swap the import; the rest of this layer's code is encoder-agnostic.
+</Callout>
 
 ## See the space — 2D PCA
 
@@ -85,7 +89,7 @@ rows = [json.loads(l) for l in pathlib.Path("data/arxiv_titles.jsonl").read_text
 titles = [r["title"] for r in rows]
 cats   = [r["category"] for r in rows]
 
-# assume `E` from the voyage call above, shape (N, 1024)
+# assume `E` from the Cohere call above, shape (N, 1024)
 xy = PCA(n_components=2).fit_transform(E)
 colors = {"cs.CL": "tab:blue", "cs.CV": "tab:orange", "cs.LG": "tab:green"}
 for (x, y), c in zip(xy, cats):
@@ -96,7 +100,7 @@ plt.savefig("space.png", dpi=120)
 Run the lab on 500 titles across three arXiv categories. Clusters separate cleanly even in 2D — that is the sanity check you want before trusting a retriever.
 
 <Callout kind="break" title="Watch it break">
-Switch `input_type="document"` to `input_type="query"` and rerun. Voyage uses *asymmetric* encoding — query and document embeddings live in slightly different subspaces. Mixing them tanks recall ~15% on real corpora. Almost every modern encoder does this; almost every tutorial gets it wrong. Check the docs before you ship.
+Switch `input_type="search_document"` to `input_type="search_query"` and rerun. Cohere (and Voyage, OpenAI v3) use *asymmetric* encoding — query and document embeddings live in slightly different subspaces. Mixing them tanks recall ~15% on real corpora. Almost every modern encoder does this; almost every tutorial gets it wrong. Check the docs before you ship.
 </Callout>
 
 ## Dot vs cosine, settled

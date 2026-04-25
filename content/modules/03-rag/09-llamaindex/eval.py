@@ -10,8 +10,8 @@ THRESHOLD = 0.65  # naive-parity; not a ceiling.
 
 
 def main() -> int:
-    if not (os.environ.get("VOYAGE_API_KEY") and os.environ.get("ANTHROPIC_API_KEY")):
-        print("skip: VOYAGE_API_KEY and ANTHROPIC_API_KEY required")
+    if not (os.environ.get("COHERE_API_KEY") and os.environ.get("ANTHROPIC_API_KEY")):
+        print("skip: COHERE_API_KEY and ANTHROPIC_API_KEY required")
         return 1
 
     sys.path.insert(0, str(Path(__file__).parent))

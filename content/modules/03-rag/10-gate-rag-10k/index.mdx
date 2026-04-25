@@ -5,7 +5,7 @@ order: 10
 minutes: 60
 cost_usd: 4.00
 p95_latency_ms: 4500
-stack: ["anthropic", "voyage", "rank_bm25", "sentence-transformers", "cohere", "ragas"]
+stack: ["anthropic", "cohere", "rank_bm25", "sentence-transformers", "cohere", "ragas"]
 gate:
   metric: "faithfulness"
   threshold: 0.85
@@ -28,7 +28,7 @@ You have everything. Five lessons of components; one lesson to compose them. The
 ```python file=pipeline.py
 filings  = fetch_10ks(tickers, limit=100)                 # 3.10 EDGAR fetcher
 chunks   = structural_chunk(filings, seed=seed)           # 3.5 section-aware
-idx      = build_index(chunks, voyage="voyage-3")         # 3.6 dense + BM25
+idx      = build_index(chunks, cohere="embed-english-v3.0")         # 3.6 dense + BM25
 retrieve = hybrid_then_rerank(idx, k=5, candidate_k=30)   # 3.6 RRF + bge
 
 def answer(q, qtype):

@@ -18,11 +18,11 @@ ARXIV_DIR = Path(__file__).parent.parent / "03-naive-rag" / "data" / "arxiv"
 # ---------- The 15-line LlamaIndex version -------------------------------
 def build_llamaindex_retriever(top_k: int = 10):
     from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
-    from llama_index.embeddings.voyageai import VoyageEmbedding
+    from llama_index.embeddings.cohere import CohereEmbedding
     from llama_index.llms.anthropic import Anthropic
 
     Settings.llm = Anthropic(model="claude-sonnet-4-6")
-    Settings.embed_model = VoyageEmbedding(model_name="voyage-3")
+    Settings.embed_model = CohereEmbedding(model_name="embed-english-v3.0")
 
     docs = SimpleDirectoryReader(str(ARXIV_DIR)).load_data()
     index = VectorStoreIndex.from_documents(docs)
@@ -38,9 +38,9 @@ def build_llamaindex_retriever(top_k: int = 10):
 
 # ---------- The 50-line naive version, trimmed for parity -----------------
 def build_naive_retriever(top_k: int = 10):
-    import voyageai
+    import cohere
 
-    vo = voyageai.Client()
+    co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
     texts: list[str] = []
     arxiv_ids: list[str] = []
     for path in sorted(ARXIV_DIR.glob("*.txt")):
@@ -48,11 +48,11 @@ def build_naive_retriever(top_k: int = 10):
         for i in range(0, len(t), 500):
             texts.append(t[i : i + 500])
             arxiv_ids.append(path.stem)
-    E = np.array(vo.embed(texts, model="voyage-3", input_type="document").embeddings)
+    E = np.array(co.embed(texts=texts, model="embed-english-v3.0", input_type="search_document").embeddings)
     E /= np.linalg.norm(E, axis=1, keepdims=True)
 
     def retrieve(q: str, k: int) -> list[str]:
-        qe = np.array(vo.embed([q], model="voyage-3", input_type="query").embeddings[0])
+        qe = np.array(co.embed(texts=[q], model="embed-english-v3.0", input_type="search_query").embeddings[0])
         qe /= np.linalg.norm(qe)
         order = np.argsort(-(E @ qe))[:k]
         return [arxiv_ids[i] for i in order]
@@ -77,7 +77,7 @@ def eval_retriever(retrieve, eval_set, k: int = 10) -> float:
 
 
 def main() -> None:
-    assert os.environ.get("VOYAGE_API_KEY") and os.environ.get("ANTHROPIC_API_KEY")
+    assert os.environ.get("COHERE_API_KEY") and os.environ.get("ANTHROPIC_API_KEY")
     import json
 
     eval_set = json.loads(

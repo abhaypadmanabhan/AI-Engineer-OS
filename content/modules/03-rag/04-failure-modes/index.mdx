@@ -5,7 +5,7 @@ order: 4
 minutes: 30
 cost_usd: 0.02
 p95_latency_ms: null
-stack: ["numpy", "voyage"]
+stack: ["numpy", "cohere"]
 gate:
   metric: "failures_identified"
   threshold: 4
@@ -24,8 +24,9 @@ interview_qs:
 Four failure modes. No fixes yet. Learn to name them when you see them — that is the whole lesson.
 
 ```python file=reproduce_failures.py
-import numpy as np, voyageai
-vo = voyageai.Client()
+import os
+import numpy as np, cohere
+co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
 
 # Failure 1 — boundary split. A 500-char chunker cuts a table from its heading.
 page = (

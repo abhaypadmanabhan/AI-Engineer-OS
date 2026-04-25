@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
-import voyageai
+import cohere
 
-vo = voyageai.Client()
+co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
 ARXIV_DIR = Path(__file__).parent.parent / "03-naive-rag" / "data" / "arxiv"
 EVAL_PATH = Path(__file__).parent.parent / "03-naive-rag" / "data" / "eval_questions.json"
 
@@ -43,7 +43,7 @@ def semantic(text: str, size: int = 500, threshold_pct: int = 90) -> list[str]:
     sents = [s.strip() for s in text.replace("\n", " ").split(". ") if s.strip()]
     if len(sents) < 3:
         return [text]
-    E = np.array(vo.embed(sents, model="voyage-3", input_type="document").embeddings)
+    E = np.array(co.embed(texts=sents, model="embed-english-v3.0", input_type="search_document").embeddings)
     E /= np.linalg.norm(E, axis=1, keepdims=True)
     sims = (E[:-1] * E[1:]).sum(axis=1)
     cut = np.percentile(sims, 100 - threshold_pct)
@@ -75,7 +75,7 @@ def build_index(chunker: Callable[[str], list[str]]) -> tuple[np.ndarray, list[t
         for c in chunker(path.read_text()):
             corpus.append((c, path.stem))
     texts = [c for c, _ in corpus]
-    embs = np.array(vo.embed(texts, model="voyage-3", input_type="document").embeddings)
+    embs = np.array(co.embed(texts=texts, model="embed-english-v3.0", input_type="search_document").embeddings)
     embs /= np.linalg.norm(embs, axis=1, keepdims=True)
     return embs, corpus
 
@@ -84,7 +84,7 @@ def recall_at_k(embs: np.ndarray, corpus: list[tuple[str, str]], k: int = 5) -> 
     eval_set = json.loads(EVAL_PATH.read_text())
     hits = 0
     for item in eval_set:
-        qe = np.array(vo.embed([item["question"]], model="voyage-3", input_type="query").embeddings[0])
+        qe = np.array(co.embed(texts=[item["question"]], model="embed-english-v3.0", input_type="search_query").embeddings[0])
         qe /= np.linalg.norm(qe)
         top = (embs @ qe).argsort()[-k:][::-1]
         if item["expected_arxiv_id"] in {corpus[i][1] for i in top}:

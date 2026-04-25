@@ -5,7 +5,7 @@ order: 3
 minutes: 50
 cost_usd: 0.08
 p95_latency_ms: 2400
-stack: ["anthropic", "voyage", "numpy"]
+stack: ["anthropic", "cohere", "numpy"]
 gate:
   metric: "recall_at_5"
   threshold: 0.6
@@ -24,11 +24,11 @@ interview_qs:
 Build RAG in 50 lines against real arXiv papers. Watch it fail. Then you'll know what LlamaIndex is abstracting.
 
 ```python file=naive_rag.py colab=content/modules/03-rag/03-naive-rag/lab.ipynb
-import os, numpy as np, voyageai
+import os, numpy as np, cohere
 from anthropic import Anthropic
 from pathlib import Path
 
-vo = voyageai.Client()
+co = cohere.Client(api_key=os.environ["COHERE_API_KEY"])
 claude = Anthropic()
 
 # 1. Chunk — naive fixed-size, 500 chars, no overlap
@@ -39,12 +39,12 @@ def chunk(text: str, size: int = 500) -> list[str]:
 docs = [p.read_text() for p in Path("arxiv/").glob("*.txt")]
 chunks = [(c, i) for i, d in enumerate(docs) for c in chunk(d)]
 texts = [c for c, _ in chunks]
-embs = np.array(vo.embed(texts, model="voyage-3").embeddings)
+embs = np.array(co.embed(texts=texts, model="embed-english-v3.0", input_type="search_document").embeddings)
 embs /= np.linalg.norm(embs, axis=1, keepdims=True)
 
 # 3. Retrieve — cosine top-k
 def retrieve(query: str, k: int = 5) -> list[str]:
-    qe = np.array(vo.embed([query], model="voyage-3").embeddings[0])
+    qe = np.array(co.embed(texts=[query], model="embed-english-v3.0", input_type="search_query").embeddings[0])
     qe /= np.linalg.norm(qe)
     scores = embs @ qe
     return [texts[i] for i in scores.argsort()[-k:][::-1]]
